@@ -1,0 +1,18 @@
+{
+  "projects": [
+    {
+      "code": "EXAMPLE-001",
+      "client": "Example Client",
+      "project_name": "Example Project",
+      "domains": ["example.com"],
+      "channels": ["example-project"],
+      "keywords": ["example project"]
+    }
+  ],
+  "excel": {
+    "sheet_name": "Timesheet",
+    "header_row": 1,
+    "project_column": 1,
+    "first_project_row": 2
+  }
+}

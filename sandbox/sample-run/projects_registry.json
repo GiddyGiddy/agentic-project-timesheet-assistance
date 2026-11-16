@@ -1,0 +1,37 @@
+{
+  "projects": [
+    {
+      "code": "ALPHA-001",
+      "client": "Alpha Client",
+      "project_name": "Alpha Release",
+      "domains": ["alpha-client.example"],
+      "channels": ["alpha-release"],
+      "keywords": ["ALPHA", "release notes"]
+    },
+    {
+      "code": "BETA-002",
+      "client": "Beta Client",
+      "project_name": "Beta API",
+      "domains": ["beta-client.example"],
+      "channels": ["beta-api"],
+      "keywords": ["BETA", "API", "design review"]
+    },
+    {
+      "code": "GAMMA-003",
+      "client": "Gamma Client",
+      "project_name": "Gamma Migration",
+      "domains": ["gamma-client.example"],
+      "channels": ["gamma-migration"],
+      "keywords": ["GAMMA", "data migration", "migration scripts"]
+    }
+  ],
+  "excel": {
+    "sheet_name": "Timesheet",
+    "header_row": 1,
+    "project_column": 1,
+    "first_project_row": 2,
+    "last_project_row": 4,
+    "month_header_cell": "B6",
+    "monthly_total_column": "AG"
+  }
+}

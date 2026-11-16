@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Timesheet Assistant</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#daily"><span class="brand-mark">T</span><span>Timesheet <small>ASSISTANT</small></span></a>
+      <p class="nav-label">WORKSPACE</p>
+      <nav aria-label="Main navigation">
+        <button class="nav-item active" data-tab="daily"><span>◷</span> Daily review</button>
+        <button class="nav-item" data-tab="monthly"><span>▤</span> Monthly export</button>
+        <button class="nav-item" data-tab="scheduler"><span>◴</span> Scheduler</button>
+        <button class="nav-item" data-tab="projects"><span>▦</span> Projects</button>
+        <button class="nav-item" data-tab="settings"><span>⚙</span> Setup &amp; integrations</button>
+      </nav>
+      <div class="sidebar-note">
+        <span class="status-dot"></span><strong>Local workspace</strong>
+        <p>Single-user mode. Your entries stay unapproved until you confirm them.</p>
+      </div>
+    </aside>
+    <main>
+      <header class="topbar"><span>WORKSPACE / <span id="breadcrumb">DAILY REVIEW</span></span><span class="local-pill"><span class="status-dot"></span> Local mode</span></header>
+      <div class="content">
+        <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+        <section id="daily" class="page">
+          <div class="heading"><div><p class="eyebrow">YOUR WORK, CAPTURED</p><h1>Daily review</h1><p>Turn your daily activity into a timesheet you can trust.</p></div><span class="heading-icon">◷</span></div>
+          <div class="grid overview">
+            <article class="card overview-card"><span class="icon-box">✓</span><div><span class="muted small">APPROVAL STATUS</span><strong id="summary-status">Not loaded</strong><span class="muted small">Human review required</span></div></article>
+            <article class="card overview-card"><span class="icon-box purple">▤</span><div><span class="muted small">PROPOSED HOURS</span><strong id="summary-hours">—</strong><span class="muted small">For the selected date</span></div></article>
+            <article class="card overview-card"><span class="icon-box amber">◇</span><div><span class="muted small">NEEDS ATTENTION</span><strong id="summary-low">—</strong><span class="muted small">Low-confidence entries</span></div></article>
+          </div>
+          <article class="card section-card">
+            <div class="section-title"><div><h2>Review a workday</h2><p>Select a date, generate a proposal and make any corrections before approval.</p></div><span class="badge">HUMAN IN THE LOOP</span></div>
+            <div class="action-row"><label class="date-field">Work date<input id="work-date" type="date" required></label><button id="load-day" class="button secondary">Load proposal</button><button id="generate" class="button primary">Generate proposal <span>→</span></button></div>
+            <p class="hint">Generation fetches your Microsoft 365 activity and, if a review-message operation is configured, sends it to Teams. It does not save hours.</p>
+            <div class="divider"></div>
+            <div class="section-title table-title"><div><h3>Proposed entries</h3><p id="day-description">Load or generate a proposal to begin.</p></div><button id="add-entry" class="button quiet" disabled>+ Add entry</button></div>
+            <div class="table-wrap"><table><thead><tr><th>PROJECT</th><th>HOURS</th><th>WORK SUMMARY</th><th>CONFIDENCE</th><th><span class="sr-only">Remove</span></th></tr></thead><tbody id="entries"></tbody></table><div id="empty-entries" class="empty-state">No proposal loaded yet.</div></div>
+            <div class="review-footer"><span id="review-total" class="muted">Total: —</span><div><button id="retry" class="button secondary" disabled>Retry failed step</button><button id="reject" class="button secondary" disabled>Reject</button><button id="approve" class="button primary" disabled>Approve &amp; save</button></div></div>
+          </article>
+          <div class="footnote"><strong>Before you begin</strong><span>Configure your environment and Microsoft 365 connection, then add your projects. Teams replies are not yet supported.</span><button class="text-link" data-tab="settings">Go to setup →</button></div>
+        </section>
+
+        <section id="monthly" class="page" hidden>
+          <div class="heading"><div><p class="eyebrow">YOUR MONTH AT A GLANCE</p><h1>Monthly export</h1><p>Review approved hours before creating your Excel timesheet.</p></div><span class="heading-icon">▤</span></div>
+          <div class="grid overview">
+            <article class="card overview-card"><span class="icon-box purple">▤</span><div><span class="muted small">APPROVED HOURS</span><strong id="monthly-hours">—</strong><span class="muted small">For the selected month</span></div></article>
+            <article class="card overview-card"><span class="icon-box">✓</span><div><span class="muted small">DAYS WITH HOURS</span><strong id="monthly-days">—</strong><span class="muted small">Days with approved entries</span></div></article>
+            <article class="card overview-card"><span class="icon-box amber">◇</span><div><span class="muted small">UNFINISHED RUNS</span><strong id="monthly-pending">—</strong><span class="muted small">Resolve before exporting</span></div></article>
+          </div>
+          <article class="card section-card">
+            <div class="section-title"><div><h2>Export timesheet</h2><p>Select a month and check its approved project totals.</p></div><span class="badge">APPROVED ENTRIES ONLY</span></div>
+            <div class="action-row"><label class="date-field">Month<input id="export-month" type="month" required></label><button id="load-month" class="button secondary">Load overview</button><button id="export-month-button" class="button primary" disabled>Generate Excel <span>→</span></button><button id="download-month" class="button secondary" disabled>Download Excel</button></div>
+            <p id="month-message" class="hint">Load a month to see approved hours and unfinished reviews.</p>
+            <div class="divider"></div>
+            <div class="section-title table-title"><div><h3>Approved project totals</h3><p>Unapproved proposals are not included.</p></div></div>
+            <div class="table-wrap"><table class="monthly-table"><thead><tr><th>PROJECT CODE</th><th>APPROVED HOURS</th></tr></thead><tbody id="monthly-entries"></tbody></table><div id="empty-month" class="empty-state">No month loaded yet.</div></div>
+            <p class="hint">Days without approved hours can include weekends, future days and empty approvals. Check your timesheet for completeness. Existing exports may be out of date and are never overwritten.</p>
+          </article>
+        </section>
+
+        <section id="scheduler" class="page" hidden>
+          <div class="heading"><div><p class="eyebrow">AUTOMATION</p><h1>Scheduler</h1><p>Run the existing daily and month-end jobs while this dashboard is open.</p></div><span class="heading-icon">◴</span></div>
+          <article class="card section-card">
+            <div class="section-title"><div><h2>Local scheduler</h2><p>Runs only inside this dashboard process. It stops when the server stops.</p></div><span id="scheduler-badge" class="badge">STOPPED</span></div>
+            <div class="status-grid scheduler-grid">
+              <div class="status-item"><strong>Time zone</strong><span id="scheduler-zone">—</span></div>
+              <div class="status-item"><strong>Next daily proposal</strong><span id="scheduler-next-daily">—</span></div>
+              <div class="status-item"><strong>Next month-end export</strong><span id="scheduler-next-export">—</span></div>
+            </div>
+            <p class="hint">Daily proposals run at 18:00; export runs at 18:30 on the last day of the month. Pending reviews block export. Missed jobs are not backfilled.</p>
+            <p id="scheduler-last" class="hint">No jobs have run in this dashboard session.</p>
+            <div class="action-row"><button id="scheduler-start" class="button primary" disabled>Start scheduler</button><button id="scheduler-stop" class="button secondary" disabled>Stop scheduler</button><button id="scheduler-refresh" class="button secondary">Refresh status</button></div>
+          </article>
+          <div class="footnote"><strong>One scheduler at a time</strong><span>Do not run the CLI scheduler or another dashboard process at the same time.</span></div>
+        </section>
+
+        <section id="projects" class="page" hidden>
+          <div class="heading"><div><p class="eyebrow">YOUR PROJECTS</p><h1>Project registry</h1><p>Give the mapper the context it needs to recognize your work.</p></div></div>
+          <article class="card section-card"><div class="section-title"><div><h2>Active projects</h2><p>Project codes must match your Excel template. Separate multiple values with commas.</p></div><button id="add-project" class="button secondary">+ Add project</button></div>
+            <div id="project-list"></div><div class="form-actions"><button id="save-projects" class="button primary">Save projects</button></div>
+          </article>
+        </section>
+
+        <section id="settings" class="page" hidden>
+          <div class="heading"><div><p class="eyebrow">CONFIGURATION</p><h1>Setup &amp; integrations</h1><p>Connect your services and configure your timesheet template.</p></div></div>
+          <div class="stack">
+            <article class="card section-card"><div class="section-title"><div><h2>Microsoft 365</h2><p>Configure a compatible MCP server and its four operations in <code>config\mcp_servers.json</code>.</p></div><span class="badge">MCP</span></div>
+              <div id="mcp-status" class="status-grid"></div>
+              <div class="action-row"><button id="workiq-sign-in" class="button secondary" type="button">Sign in to Microsoft 365</button></div>
+              <p id="workiq-message" class="hint">Sign-in is kept in memory and must be repeated after restarting the dashboard. Sign-in alone does not configure activity collection.</p>
+              <p class="hint">Configuration status does not verify connectivity. Teams replies are not supported. See the project README for the required tool contract.</p>
+            </article>
+            <form id="excel-form" class="card section-card"><div class="section-title"><div><h2>Excel layout</h2><p>Coordinates refer to your existing .xlsx template. Blank day mapping uses the header row.</p></div></div>
+              <div class="form-grid">
+                <label>Sheet name<input name="sheet_name" required></label>
+                <label>Project column number<input name="project_column" type="number" min="1" required></label>
+                <label>First project row<input name="first_project_row" type="number" min="1" required></label>
+                <label>Last project row <span class="optional">(optional)</span><input name="last_project_row" type="number" min="1"></label>
+                <label>Day header row <span class="optional">(optional with mapping)</span><input name="header_row" type="number" min="1"></label>
+                <label>Month header cell <span class="optional">(optional)</span><input name="month_header_cell" placeholder="B2"></label>
+                <label>Month header format<input name="month_header_format" placeholder="%B %Y"></label>
+                <label>Monthly total column <span class="optional">(optional)</span><input name="monthly_total_column" placeholder="AH"></label>
+                <label class="wide">Explicit day columns as JSON <span class="optional">(optional; e.g. {"1":"C","2":"D"})</span><textarea name="day_columns" rows="3" placeholder='{"1":"C","2":"D"}'></textarea></label>
+                <label class="check wide"><input name="write_total_formula" type="checkbox"> Add total formulas only to blank cells</label>
+              </div><div class="form-actions"><button class="button primary" type="submit">Save Excel layout</button></div>
+            </form>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

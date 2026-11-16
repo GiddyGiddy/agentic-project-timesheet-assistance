@@ -1,0 +1,15 @@
+{
+  "servers": {
+    "workiq": {
+      "transport": "http",
+      "url": "https://workiq.svc.cloud.microsoft/mcp",
+      "auth_type": "workiq_browser"
+    }
+  },
+  "operations": {
+    "emails": {"server": "workiq", "adapter": "workiq_graph", "resource": "emails"},
+    "events": {"server": "workiq", "adapter": "workiq_graph", "resource": "events"},
+    "chats": {"server": "workiq", "adapter": "workiq_graph", "resource": "chats"},
+    "send_review": {"server": "workiq", "disabled": true}
+  }
+}
