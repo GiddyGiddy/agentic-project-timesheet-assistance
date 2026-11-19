@@ -16,7 +16,7 @@ It is built with Python, LangGraph, FastAPI, SQLAlchemy/SQLite, MSAL, `langchain
 | Real project registry | Not yet supplied; `config\projects_registry.json` holds an example project. |
 | Corporate Excel template | Not yet supplied; its coordinates are still to be configured. |
 | Teams review message | Disabled. Approval happens in the dashboard or CLI; **Teams replies are not processed**. |
-| Windows desktop readiness | Per-user setup, DPAPI-protected settings, browser launcher, single-instance reopening and explicit graceful exit are implemented. An unsigned standalone Windows x64 build passes isolated offline smoke tests. GitHub Actions build automation is configured; MSIX/signing/release publishing is still pending. |
+| Windows desktop readiness | Per-user setup, DPAPI-protected settings, browser launcher, single-instance reopening and graceful exit are implemented. Standalone x64 builds pass isolated offline smoke tests. GitHub builds unsigned ZIP and Preview MSIX artifacts; local pilot signing is supported. MSIX installation/upgrade testing and production signing are still pending. |
 
 ## Solution Architecture
 
@@ -111,7 +111,7 @@ For repository development, copy `.env.example` to `.env` and fill in the values
 | `CLIENT_ID` | Application (client) ID of the app registration | none |
 | `CLIENT_SECRET` | Not used by the Work IQ browser sign-in | none |
 | `TIMEZONE` | IANA time zone for the day window and scheduler | `Europe/Berlin` |
-| `TIMESHEET_DATA_DIR` | Absolute per-user data root, set in the process environment | unset in development; `%LOCALAPPDATA%\TimesheetAssistant` for frozen builds |
+| `TIMESHEET_DATA_DIR` | Absolute per-user data root, set in the process environment | unset in development; `%LOCALAPPDATA%\TimesheetAssistant` for portable builds; package-specific `LocalState\TimesheetAssistant` for MSIX |
 | `DATABASE_URL` | Approved entries and audit | `sqlite:///data/timesheet.db` |
 | `CHECKPOINT_PATH` | LangGraph checkpoints | `data/checkpoints.db` |
 | `MCP_CONFIG_PATH` | MCP servers and operations | `config/mcp_servers.json` |
@@ -121,10 +121,10 @@ For repository development, copy `.env.example` to `.env` and fill in the values
 
 ### Installation preparation: per-user storage
 
-The MSIX-readiness work separates writable user data from application files, provides Windows-protected first-run setup, and includes a standalone Windows browser launcher with single-instance and shutdown handling. This is not yet an MSIX installer: signing and release publishing are subsequent steps.
+The Windows packaging work separates writable user data from application files and provides Windows-protected setup and a browser launcher with single-instance/shutdown handling. Preview MSIX packaging and local pilot signing are described below; production signing and installation/upgrade certification remain separate.
 
 - Repository runs keep their existing paths and `.env` behaviour unless opted into per-user storage.
-- Frozen/packaged builds select `%LOCALAPPDATA%\TimesheetAssistant`. Set `TIMESHEET_DATA_DIR` to an absolute path to select another profile or test this mode from source.
+- Portable frozen builds select `%LOCALAPPDATA%\TimesheetAssistant`. MSIX uses `%LOCALAPPDATA%\Packages\<package-family>\LocalState\TimesheetAssistant`, derived from the calling process's Windows package identity, so Preview does not automatically reuse portable or future production data. Set `TIMESHEET_DATA_DIR` to an absolute path to explicitly select another profile or test this mode from source.
 - A profile contains `config\`, `data\` (SQLite databases, checkpoints and optional Excel template), and `output\`. First startup seeds the bundled project/MCP configuration only if missing. It never replaces existing configuration or creates a dummy Excel template.
 - Per-user mode ignores the working-directory `.env`, including MCP substitutions. Enter service settings in the dashboard or supply process environment variables. No credentials or Microsoft 365 tokens are copied into a new profile.
 - Explicit path overrides remain supported; relative overrides in per-user mode are rooted in the profile. Application resources continue to come from the installed package, not the working directory.
@@ -182,7 +182,7 @@ After installing the project, start the windowless Windows GUI entry point:
 .\.venv\Scripts\timesheet-desktop.exe
 ```
 
-The source equivalent is `.\.venv\Scripts\python.exe -m src.desktop`. Unlike the development dashboard, the desktop launcher always uses a per-user profile: `%LOCALAPPDATA%\TimesheetAssistant`, or the absolute `TIMESHEET_DATA_DIR` override. It never implicitly imports repository data or reads the repository `.env`.
+The source equivalent is `.\.venv\Scripts\python.exe -m src.desktop`. Unlike the development dashboard, the desktop launcher always uses a per-user profile: the portable or MSIX-specific default above, or the absolute `TIMESHEET_DATA_DIR` override. It never implicitly imports repository data or reads the repository `.env`.
 
 - The launcher opens the default browser only after the loopback dashboard is ready.
 - Starting it again for the same profile verifies the existing server using its private token and opens that dashboard instead of starting another process. Activation details in `run\desktop-session.dpapi` are encrypted for the Windows user; the token is not printed or logged.
@@ -195,7 +195,7 @@ The source equivalent is `.\.venv\Scripts\python.exe -m src.desktop`. Unlike the
 
 The existing `timesheet-ui` / `python -m src.web.app` command remains a manual development server: it prints a private URL, does not automatically open a browser, and retains repository storage unless explicitly opted into a profile. Its managed server also supports **Exit application**. Refreshing old browser pages is not a substitute for restarting an older server after code changes.
 
-This launcher is not a Windows service, system-tray app, auto-start registration or finished MSIX package. Clean-machine installation and upgrade testing follow the packaging stage.
+This launcher is not a Windows service, system-tray app or auto-start registration. MSIX packaging does not replace clean-machine installation and upgrade testing.
 
 ### Standalone Windows build (unsigned)
 
@@ -216,7 +216,7 @@ The version comes from `pyproject.toml`. Build tools are pinned, but runtime dep
 
 Extract the **whole ZIP** to a writable location and run `TimesheetAssistant.exe`. Do not copy the executable alone or run it inside the ZIP: it needs the adjacent `_internal` directory. Python does not need to be installed for this bundle. The app opens the browser and uses the per-user profile described above; service configuration, Microsoft 365 entitlement/sign-in and an export template are still required. Stop a development dashboard before launching the bundle because both use port 8765.
 
-This is a portable, **unsigned** test distribution, not an installer or production release. Windows may show trust/SmartScreen warnings or block it under organizational policy; follow your administrator's distribution policy rather than bypassing protection. Clean-machine testing, dependency/license review, MSIX identity/assets, trusted signing, upgrades and release publishing remain to be completed.
+This is a portable, **unsigned** test distribution, not an installer or production release. Windows may show trust/SmartScreen warnings or block it under organizational policy; follow your administrator's distribution policy rather than bypassing protection. Clean-machine testing, dependency/license review, trusted production signing and upgrades remain to be completed.
 
 The opt-in smoke test launches the actual executable and opens browser tabs. It needs a free port 8765, strips Python from the child process's `PATH`, runs from a foreign working directory and uses only an isolated synthetic profile:
 
@@ -231,18 +231,66 @@ Verified offline: frontend assets, profile seeding without reading a working-dir
 
 ### GitHub Actions build artifacts
 
-The [Windows standalone build workflow](.github/workflows/windows-build.yml) runs on pushes, pull requests and manual dispatch. Once committed and pushed, it uses a GitHub-hosted Windows 2025 x64 runner with Python 3.14.2 to:
+The [Windows standalone build workflow](.github/workflows/windows-build.yml) runs on branch pushes, pull requests and manual dispatch. It uses a GitHub-hosted Windows 2025 x64 runner with Python 3.14.2 to:
 
 1. Install the application, development and pinned build tooling, then check dependency compatibility.
 2. Run the normal synthetic regression suite, including native Windows lifecycle/DPAPI tests.
 3. Run the same `windows\build.ps1` used locally to build and verify the unsigned distribution.
-4. Upload only the versioned ZIP and its SHA256 file after every preceding step succeeds.
+4. Build a separate unsigned Preview MSIX with the Windows SDK, using the workflow run number as its fourth version component.
+5. Upload only the versioned ZIP, Preview MSIX and their SHA256 files after every preceding step succeeds.
 
 No Azure, Microsoft 365 or signing secrets are needed. The workflow token has read-only repository access, checkout credentials are not persisted, and third-party action references are pinned to verified commit SHAs. Builds use compatible runtime dependency ranges, so the pinned interpreter/actions/build tools do not make releases fully reproducible.
 
 To download a build, open the repository's **Actions > Windows standalone build**, select a successful run for the intended commit, and download `windows-x64-unsigned-<commit>-<attempt>` under **Artifacts**. Artifacts expire after seven days (subject to repository policy); access requires appropriate GitHub permissions, and Actions usage/storage is subject to the repository's plan and limits. Unpack GitHub's artifact download first, then extract the inner application ZIP in full. Compare `Get-FileHash -Algorithm SHA256 <application-zip>` with the adjacent `.sha256` file before running.
 
-The browser-opening frozen smoke test remains opt-in/local and is skipped in CI. A successful CI run verifies the build and unit/native regression tests, **not** interactive packaged-app behavior or installation on a clean Windows machine. Test the downloaded artifact using the preceding smoke-test procedure before distribution. This workflow does not sign, create an MSIX, publish a GitHub Release, deploy to Azure or install anything for users. Manual dispatch becomes available after the workflow is on the default branch; GitHub may require approval for fork pull requests or repository Actions to be enabled.
+The browser-opening frozen smoke test remains opt-in/local and is skipped in CI. A successful CI run verifies the build, SDK package validation and unit/native regression tests, **not** interactive MSIX behavior or installation on a clean Windows machine. Test the downloaded artifact before distribution. This workflow does not sign, publish a GitHub Release, deploy to Azure or install anything for users. Pilot Releases are published separately after explicitly signing the GitHub-built MSIX locally; private signing keys never go to GitHub. Manual dispatch becomes available after the workflow is on the default branch; GitHub may require approval for fork pull requests or repository Actions to be enabled.
+
+### Preview MSIX: direct download and local pilot signing
+
+The Preview package is intentionally separate from a future Store/production package:
+
+| Setting | Preview value |
+|---|---|
+| Display name | Timesheet Assistant Preview |
+| Identity | `GiddyGiddy.TimesheetAssistant.Preview` |
+| Publisher | `CN=TimesheetAssistantPreview` |
+| Architecture | x64 |
+| Declared OS minimum | Windows 10 build 19041; use a supported Windows version |
+| Storage | `%LOCALAPPDATA%\Packages\<package-family>\LocalState\TimesheetAssistant` |
+
+It is a full-trust desktop application with a Start menu entry and original generated clock icons, not an AppContainer or background Windows service. The minimum OS declaration is not clean-machine certification. It still uses port 8765, so close the development/portable dashboard before starting it.
+
+Build locally after the standalone bundle, with the Windows 10/11 SDK installed:
+
+```powershell
+.\windows\build-msix.ps1 -Revision 1
+```
+
+The SDK validates the manifest, resources and package while creating `dist\TimesheetAssistantPreview-0.1.0.1-x64-unsigned.msix` and its `.sha256` file. Version is `<project-major>.<minor>.<patch>.<revision>`; every component must fit 0..65535. Local revision defaults to zero; CI uses its workflow run number and fails explicitly if it no longer fits. Use a strictly higher version for updates and preserve the package identity/publisher.
+
+Unsigned MSIX artifacts are build inputs, **not normally installable** downloads. For a pilot, a maintainer creates a certificate **once** in their own Personal certificate store and retains it for subsequent updates:
+
+```powershell
+$cert = New-SelfSignedCertificate -Type Custom -Subject "CN=TimesheetAssistantPreview" `
+  -FriendlyName "Timesheet Assistant Preview pilot signing" `
+  -KeyUsage DigitalSignature -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 `
+  -KeyExportPolicy NonExportable -CertStoreLocation "Cert:\CurrentUser\My" `
+  -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}") `
+  -NotAfter (Get-Date).AddYears(1)
+.\windows\sign-preview.ps1 `
+  -Package ".\dist\TimesheetAssistantPreview-0.1.0.1-x64-unsigned.msix" `
+  -CertificateThumbprint $cert.Thumbprint
+```
+
+Signing creates a separate `-pilot-signed.msix`, its SHA256 file and a **public-only** `.msix.cer`. It refuses an existing signed output, checks the Preview identity, certificate subject/validity/code-signing usage, and uses the private key directly from `CurrentUser\My`. It never exports the private key, changes trusted stores or installs the application. This self-signed, untimestamped certificate is only for a controlled pilot; keep its private key secure and plan renewal before expiry.
+
+For distribution, use a GitHub **prerelease**, not GitHub Packages: a signed MSIX is a downloadable release asset, not a container/NuGet registry package. Attach the pilot-signed MSIX, its checksum and the public certificate, plus the portable ZIP/checksum if desired. Pin the release tag to the exact successful build commit and identify that run and certificate thumbprint in the notes. Builds/artifacts alone do not automatically publish a Release.
+
+Before installing, recipients must verify the checksum and independently confirm the public certificate's thumbprint with the publisher. An administrator must explicitly approve trusting that **public certificate** in `LocalMachine\TrustedPeople` according to organizational policy; do not install a private PFX or add it as a trusted root. Neither build nor signing scripts do this. After trust approval, Windows can verify the signature and the user can install the MSIX through App Installer or `Add-AppxPackage`. Never disable signature validation to install it.
+
+Launch **Timesheet Assistant Preview** from Start. It begins with a fresh profile and no Microsoft 365 token. Back up the profile before uninstalling: Windows can remove MSIX `LocalState` data. To import existing data, install but do not launch Preview, obtain its family using `Get-AppxPackage -Name GiddyGiddy.TimesheetAssistant.Preview`, and pass the new full `LocalState\TimesheetAssistant` path to the existing offline `import-data --destination` command. The source must be closed and the destination must not exist; nothing imports credentials automatically.
+
+Installation, real MSIX activation, update preservation and uninstall behavior still require pilot testing. A future Store identity must come from Partner Center; Intune/production signing and identity choices must be settled separately. Switching from this Preview publisher/identity to production is a separate installation and explicit data migration, not an in-place update.
 
 ## Setup
 

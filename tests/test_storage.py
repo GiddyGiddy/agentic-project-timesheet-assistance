@@ -98,6 +98,17 @@ def test_frozen_profile_is_seeded_without_copying_working_directory_data(tmp_pat
     assert (tmp_path / "data" / "timesheet.db").read_bytes() == b"existing-development-data"
 
 
+def test_msix_profile_is_package_specific_and_explicit_override_still_wins(tmp_path, monkeypatch):
+    family = "GiddyGiddy.TimesheetAssistant.Preview_testpublisher"
+    monkeypatch.setattr("config.settings._package_family_name", lambda: family)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(sys, "frozen", True)
+    assert Settings().timesheet_data_dir == tmp_path / "Packages" / family / "LocalState" / "TimesheetAssistant"
+    override = tmp_path / "explicit-profile"
+    monkeypatch.setenv("TIMESHEET_DATA_DIR", str(override))
+    assert Settings().timesheet_data_dir == override
+
+
 def test_profile_paths_fail_explicitly_when_not_absolute_or_appdata_missing(monkeypatch):
     with pytest.raises(ValueError, match="absolute"):
         Settings(timesheet_data_dir=Path("relative"))

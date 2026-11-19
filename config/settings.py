@@ -1,5 +1,7 @@
+import ctypes
 import os
 import sys
+from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -11,10 +13,32 @@ from sqlalchemy.engine import make_url
 from config.user_settings import read_user_configuration
 
 
+def _package_family_name() -> str | None:
+    if sys.platform != "win32":
+        return None
+    query = ctypes.WinDLL("kernel32").GetCurrentPackageFamilyName
+    query.argtypes = [ctypes.POINTER(wintypes.UINT), wintypes.LPWSTR]
+    query.restype = wintypes.LONG
+    length = wintypes.UINT()
+    result = query(ctypes.byref(length), None)
+    if result == 15700:  # APPMODEL_ERROR_NO_PACKAGE
+        return None
+    if result != 122 or length.value < 2:  # ERROR_INSUFFICIENT_BUFFER
+        raise OSError(result, "Could not determine Windows package identity")
+    buffer = ctypes.create_unicode_buffer(length.value)
+    result = query(ctypes.byref(length), buffer)
+    if result != 0:
+        raise OSError(result, "Could not read Windows package identity")
+    return buffer.value
+
+
 def default_user_data_dir() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
     if not local_app_data:
         raise ValueError("LOCALAPPDATA is required for installed application storage")
+    family = _package_family_name()
+    if family:
+        return Path(local_app_data) / "Packages" / family / "LocalState" / "TimesheetAssistant"
     return Path(local_app_data) / "TimesheetAssistant"
 
 
