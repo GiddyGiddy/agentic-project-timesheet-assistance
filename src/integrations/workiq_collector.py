@@ -64,7 +64,7 @@ def _utc(value: str) -> datetime:
 
 
 def _stamp(value: datetime) -> str:
-    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _parse_time(value: str, zone_name: str | None = None) -> datetime:
@@ -240,28 +240,50 @@ class WorkIQCollector:
             if not chat_id:
                 continue
             label = chat.get("topic") or chat.get("chatType") or "chat"
-
-            async def fetch(window_start, window_end, chat_id=chat_id):
+            seen = set()
+            cursor = end
+            while True:
                 path = f"/me/chats/{quote(chat_id, safe=':@.-_')}/messages?" + _query({
-                    "$filter": (
-                        f"createdDateTime ge {_stamp(window_start)} "
-                        f"and createdDateTime lt {_stamp(window_end)}"
-                    ),
+                    "$filter": f"createdDateTime lt {_stamp(cursor)}",
                     "$orderby": "createdDateTime desc",
                     "$top": CHAT_MESSAGE_CAP,
                 })
-                return await self._get(path, "Teams chat messages")
-
-            for item in await self._windowed("Teams chat messages", CHAT_MESSAGE_CAP, start, end, fetch):
-                if item.get("messageType") not in (None, "message") or item.get("deletedDateTime"):
-                    continue
-                sender = ((item.get("from") or {}).get("user") or {}).get("displayName")
-                records.append({
-                    "type": "chat_message",
-                    "chat": label,
-                    "chat_type": chat.get("chatType"),
-                    "from": sender,
-                    "at": _local(_parse_time(item["createdDateTime"]), zone),
-                    "preview": _clip((item.get("body") or {}).get("content")),
-                })
+                data = await self._get(path, "Teams chat messages")
+                items = data.get("value")
+                if not isinstance(items, list):
+                    raise ValueError("Work IQ returned an unexpected Teams chat messages list")
+                if not items:
+                    if "@odata.nextLink" in data:
+                        raise IncompleteCollectionError("Work IQ returned an empty, incomplete Teams message window")
+                    break
+                timestamps = [_parse_time(item["createdDateTime"]) for item in items]
+                for item, created in zip(items, timestamps):
+                    if item.get("messageType") not in (None, "message") or item.get("deletedDateTime"):
+                        continue
+                    if not start <= created < end:
+                        continue
+                    message_id = item.get("id")
+                    if message_id:
+                        if message_id in seen:
+                            continue
+                        seen.add(message_id)
+                    sender = ((item.get("from") or {}).get("user") or {}).get("displayName")
+                    records.append({
+                        "type": "chat_message",
+                        "chat": label,
+                        "chat_type": chat.get("chatType"),
+                        "from": sender,
+                        "at": _local(created, zone),
+                        "preview": _clip((item.get("body") or {}).get("content")),
+                    })
+                oldest = min(timestamps)
+                if oldest < start or (len(items) < CHAT_MESSAGE_CAP and "@odata.nextLink" not in data):
+                    break
+                # Only lt is supported. Overlap the oldest timestamp so ties are not lost.
+                next_cursor = oldest + timedelta(microseconds=1)
+                if next_cursor >= cursor:
+                    raise IncompleteCollectionError(
+                        "Too many Teams chat messages share a timestamp to collect them completely"
+                    )
+                cursor = next_cursor
         return records

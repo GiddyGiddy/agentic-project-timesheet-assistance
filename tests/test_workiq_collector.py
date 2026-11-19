@@ -139,6 +139,58 @@ async def test_chat_messages_and_limits():
         await collector.collect("chats", SUBS)
 
 
+async def test_chat_lt_windows_keep_midnight_and_dedupe_overlapping_boundaries(monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    monkeypatch.setattr(workiq_collector, "CHAT_MESSAGE_CAP", 3)
+    messages = [
+        {"id": str(index), "createdDateTime": stamp, "body": {"content": str(index)}}
+        for index, stamp in enumerate([
+            "2026-11-14T22:59:59.500000Z",
+            "2026-11-14T23:00:00Z",
+            "2026-11-15T10:59:59.500000Z",
+            "2026-11-15T11:00:00Z",
+            "2026-11-15T23:00:00Z",
+        ])
+    ]
+
+    def handler(url):
+        if url.startswith("/me/chats?"):
+            return blocks({"value": [{"id": "test", "chatType": "group"}]})
+        query = parse_qs(urlsplit(url).query)
+        expression = query["$filter"][0]
+        parts = expression.split()
+        assert parts[:2] == ["createdDateTime", "lt"] and len(parts) == 3
+        upper = datetime.fromisoformat(parts[2])
+        matching = [item for item in messages
+                    if datetime.fromisoformat(item["createdDateTime"]) < upper]
+        return blocks({"value": list(reversed(matching))[:3]})
+
+    collector, calls = make_collector(handler)
+    records = await collector.collect("chats", SUBS)
+    assert [record["preview"] for record in records] == ["1", "2", "3"]
+    assert records[0]["at"] == "2026-11-15T00:00:00+01:00"
+    assert len(calls) > 2
+
+
+async def test_chat_timestamp_ties_fail_instead_of_losing_messages(monkeypatch):
+    monkeypatch.setattr(workiq_collector, "CHAT_MESSAGE_CAP", 2)
+
+    def handler(url):
+        if url.startswith("/me/chats?"):
+            return blocks({"value": [{"id": "test", "chatType": "group"}]})
+        return blocks({"value": [
+            {"id": str(index), "createdDateTime": "2026-11-15T12:00:00.1234567Z",
+             "body": {"content": "Same time"}}
+            for index in range(2)
+        ]})
+
+    collector, calls = make_collector(handler)
+    with pytest.raises(IncompleteCollectionError, match="share a timestamp"):
+        await collector.collect("chats", SUBS)
+    assert len(calls) == 3
+
+
 async def test_request_budget_is_enforced():
     collector, _ = make_collector(lambda url: blocks({"value": []}))
     collector.max_requests = 1
@@ -198,3 +250,27 @@ async def test_structured_content_artifact_is_used(tmp_path, monkeypatch):
     assert result == {"results": [{"data": {}, "statusCode": 200}]}
     assert seen[0]["args"] == {"entityUrls": ["/me"]}
     assert await client._execute("workiq", "fetch", {}, "probe") == []
+
+
+async def test_structured_error_artifact_does_not_bypass_failure(tmp_path, monkeypatch):
+    from langchain_core.messages import ToolMessage
+
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"servers": {}, "operations": {}}), encoding="utf-8")
+    client = MCPClient(config)
+
+    class Tool:
+        name = "fetch"
+
+        async def ainvoke(self, value):
+            return ToolMessage(
+                content="denied", status="error", tool_call_id=value["id"],
+                artifact={"structured_content": {"results": []}},
+            )
+
+    async def tools(server):
+        return [Tool()]
+
+    monkeypatch.setattr(client, "tools", tools)
+    with pytest.raises(RuntimeError, match="denied"):
+        await client._execute("workiq", "fetch", {}, "chats", structured=True)

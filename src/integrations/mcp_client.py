@@ -3,13 +3,17 @@ import os
 import re
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 from dotenv import dotenv_values
 from langchain_core.messages import ToolMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.interceptors import MCPToolCallRequest, MCPToolCallResult
+from mcp.types import CallToolResult
 
+from config.settings import Settings
 from src.integrations.workiq_auth import WORKIQ_URL, get_workiq_auth
 from src.integrations.workiq_collector import WorkIQCollector
 
@@ -17,6 +21,31 @@ TOOL_CACHE_SECONDS = 1200
 
 
 _ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+async def _check_workiq_error(
+    request: MCPToolCallRequest,
+    handler: Callable[[MCPToolCallRequest], Awaitable[MCPToolCallResult]],
+) -> MCPToolCallResult:
+    result = await handler(request)
+    if isinstance(result, CallToolResult) and result.isError:
+        details = []
+        results = (result.structuredContent or {}).get("results")
+        for item in results if isinstance(results, list) else []:
+            if not isinstance(item, dict):
+                continue
+            status = item.get("statusCode")
+            if isinstance(status, int):
+                details.append(f"HTTP {status}")
+            error = item.get("error")
+            if isinstance(error, dict):
+                error = error.get("error", error)
+            code = error.get("code") if isinstance(error, dict) else item.get("errorCode")
+            if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_.-]+", code):
+                details.append(code)
+        if details:
+            raise RuntimeError(f"Work IQ tool '{request.name}' failed ({', '.join(details)})")
+    return result
 
 
 def _resolve_env(value: Any, env: dict[str, str]) -> Any:
@@ -48,9 +77,11 @@ def _fill_arguments(value: Any, substitutions: dict[str, str]) -> Any:
 
 
 class MCPClient:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, settings: Settings | None = None):
         config = json.loads(path.read_text(encoding="utf-8"))
-        env = {key: value for key, value in dotenv_values(".env").items() if value is not None}
+        settings = settings or Settings()
+        dotenv = dotenv_values(".env") if settings.timesheet_data_dir is None else {}
+        env = {key: value for key, value in dotenv.items() if value is not None}
         env.update(os.environ)
         self.servers = _resolve_env(config["servers"], env)
         self.operations = config["operations"]
@@ -79,7 +110,10 @@ class MCPClient:
         token = await asyncio.to_thread(lambda: get_workiq_auth().token())
         connection = dict(self.servers[server])
         connection["headers"] = {**connection.get("headers", {}), "Authorization": f"Bearer {token}"}
-        client = MultiServerMCPClient({server: connection}, handle_tool_errors=False)
+        client = MultiServerMCPClient(
+            {server: connection}, handle_tool_errors=False,
+            tool_interceptors=[_check_workiq_error],
+        )
         tools = await client.get_tools(server_name=server)
         self._tool_cache[server] = (time.monotonic(), tools)
         return tools
@@ -98,6 +132,8 @@ class MCPClient:
             result = await matches[0].ainvoke(
                 {"type": "tool_call", "id": f"{label}-call", "name": tool_name, "args": args}
             )
+            if isinstance(result, ToolMessage) and result.status == "error":
+                raise RuntimeError(f"MCP operation '{label}' failed: {result.content}")
             artifact = getattr(result, "artifact", None)
             if isinstance(artifact, dict) and artifact.get("structured_content") is not None:
                 return artifact["structured_content"]
