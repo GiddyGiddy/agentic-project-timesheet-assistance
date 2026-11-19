@@ -195,3 +195,4 @@ The MCP client can also call any MCP server's tools directly. Define the server 
 - **Model lifecycle:** `gpt-4.1-mini` is marked as legacy by Azure and may need replacing.
 - **Single user:** there is no multi-user authentication, user isolation or secret management. Deploying to Azure or sharing the dashboard would need all three.
 - **Local storage:** SQLite files and `.env` are not encrypted by the application.
+[![M8ven Score](https://m8ven.ai/badge/mcp/giddygiddy/agentic-project-timesheet-assistance)](https://m8ven.ai/mcp/giddygiddy/agentic-project-timesheet-assistance?s=readme)
