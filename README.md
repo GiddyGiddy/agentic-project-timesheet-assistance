@@ -16,7 +16,7 @@ It is built with Python, LangGraph, FastAPI, SQLAlchemy/SQLite, MSAL, `langchain
 | Real project registry | Not yet supplied; `config\projects_registry.json` holds an example project. |
 | Corporate Excel template | Not yet supplied; its coordinates are still to be configured. |
 | Teams review message | Disabled. Approval happens in the dashboard or CLI; **Teams replies are not processed**. |
-| Windows desktop readiness | Per-user setup, DPAPI-protected settings, browser launcher, single-instance reopening and graceful exit are implemented. Standalone x64 builds pass isolated offline smoke tests. GitHub builds unsigned ZIP and Preview MSIX artifacts; local pilot signing is supported. MSIX installation/upgrade testing and production signing are still pending. |
+| Windows desktop readiness | Per-user setup, DPAPI-protected settings, browser launcher, single-instance reopening and graceful exit are implemented. Standalone x64 builds pass isolated offline smoke tests. A locally signed Preview was installed, launched and upgraded on one machine; clean-machine and real-data upgrade testing and trusted release signing remain pending. |
 
 ## Solution Architecture
 
@@ -229,7 +229,7 @@ Remove-Item Env:\TIMESHEET_FROZEN_EXE
 
 Verified offline: frontend assets, profile seeding without reading a working-directory `.env`, DPAPI settings save/reload without returning keys, template upload/no-overwrite, real LangGraph/SQLite initialization, duplicate-instance reopening, explicit exit and restart persistence. The test never signs in, collects Microsoft 365 activity, calls the model, approves hours, exports or starts scheduled jobs. It does not certify external connectivity from the frozen build or a clean Windows machine. Normal regression runs skip this test unless explicitly enabled.
 
-### GitHub Actions build artifacts
+### GitHub Actions Windows build
 
 The [Windows standalone build workflow](.github/workflows/windows-build.yml) runs on branch pushes, pull requests and manual dispatch. It uses a GitHub-hosted Windows 2025 x64 runner with Python 3.14.2 to:
 
@@ -237,13 +237,28 @@ The [Windows standalone build workflow](.github/workflows/windows-build.yml) run
 2. Run the normal synthetic regression suite, including native Windows lifecycle/DPAPI tests.
 3. Run the same `windows\build.ps1` used locally to build and verify the unsigned distribution.
 4. Build a separate unsigned Preview MSIX with the Windows SDK, using the workflow run number as its fourth version component.
-5. Upload only the versioned ZIP, Preview MSIX and their SHA256 files after every preceding step succeeds.
 
-No Azure, Microsoft 365 or signing secrets are needed. The workflow token has read-only repository access, checkout credentials are not persisted, and third-party action references are pinned to verified commit SHAs. Builds use compatible runtime dependency ranges, so the pinned interpreter/actions/build tools do not make releases fully reproducible.
+It does not upload the unsigned builds. No Azure, Microsoft 365 or signing secrets are needed. The workflow token has read-only repository access, checkout credentials are not persisted, and third-party action references are pinned to commit SHAs. Builds use compatible runtime dependency ranges, so the pinned interpreter/actions/build tools do not make releases fully reproducible.
 
-To download a build, open the repository's **Actions > Windows standalone build**, select a successful run for the intended commit, and download `windows-x64-unsigned-<commit>-<attempt>` under **Artifacts**. Artifacts expire after seven days (subject to repository policy); access requires appropriate GitHub permissions, and Actions usage/storage is subject to the repository's plan and limits. Unpack GitHub's artifact download first, then extract the inner application ZIP in full. Compare `Get-FileHash -Algorithm SHA256 <application-zip>` with the adjacent `.sha256` file before running.
+Stopping uploads applies only after this workflow change is merged; existing Actions artifacts and downloaded copies are not removed. The browser-opening frozen smoke test remains opt-in/local and is skipped in CI. A successful CI run verifies the build, SDK package validation and unit/native regression tests, **not** interactive MSIX behavior or installation on a clean Windows machine. This workflow does not sign, publish a GitHub Release, deploy to Azure or install anything for users.
 
-The browser-opening frozen smoke test remains opt-in/local and is skipped in CI. A successful CI run verifies the build, SDK package validation and unit/native regression tests, **not** interactive MSIX behavior or installation on a clean Windows machine. Test the downloaded artifact before distribution. This workflow does not sign, publish a GitHub Release, deploy to Azure or install anything for users. Pilot Releases are published separately after explicitly signing the GitHub-built MSIX locally; private signing keys never go to GitHub. Manual dispatch becomes available after the workflow is on the default branch; GitHub may require approval for fork pull requests or repository Actions to be enabled.
+### Encrypted Windows draft releases
+
+The [release workflow](.github/workflows/windows-release.yml) is prepared for Microsoft Artifact Signing, but requires the setup below and a successful live run before it can be relied on. A push of a `vMAJOR.MINOR.PATCH.REVISION` tag pointing to a commit on `main` runs tests, builds and signs a separate-identity MSIX, checks its signature and timestamp, then creates a **draft prerelease** containing only an AES-256 ZIP and its SHA-256 checksum. The ZIP contains the signed MSIX and its checksum; it does not contain the portable build. No GitHub Packages package is published.
+
+Before creating a release tag:
+
+1. Configure and protect a GitHub environment named `release`, including required reviewers and deployment branch/tag restrictions supported by your GitHub plan. GitHub can otherwise create an unprotected environment automatically. Restrict who can create or move release tags and change workflows, environment settings and secrets.
+2. Set up [Microsoft Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/overview), including an eligible validated identity, signing account and certificate profile. Confirm regional availability, eligibility and pricing. Grant the GitHub identity the **Artifact Signing Certificate Profile Signer** role at the appropriate scope.
+3. Configure an Entra application or managed identity with a GitHub OIDC federated credential: issuer `https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`, and subject `repo:GiddyGiddy/agentic-project-timesheet-assistance:environment:release`. The workflow uses Azure CLI authentication through `azure/login`; no Azure client secret is needed.
+4. Add these environment variables to `release`: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`, `ARTIFACT_SIGNING_PROFILE`, and `MSIX_PUBLISHER`. Set `MSIX_PUBLISHER` to the exact certificate subject of the signing profile; MSIX publisher and signing certificate must match.
+5. Add environment secret `RELEASE_ARCHIVE_PASSWORD`: a strong, randomly generated password of at least 16 characters, without line breaks. Share it through a separate secure channel, not release notes, chat or the repository. Recipients need an AES-compatible ZIP tool such as 7-Zip; standard Windows ZIP extraction may not support AES.
+
+The first three tag components must exactly match `project.version` in `pyproject.toml`; all four components must be in `0..65535`. Choose a strictly higher version than existing releases of the **same identity**; the workflow does not enforce version monotonicity. After reviewing and merging the workflow, tag an approved commit on `main` and push the tag. Approve the protected environment when prompted. Inspect the Actions run and draft assets, verify the checksum, and test installation and upgrade before manually publishing the draft. A failed upload can leave an incomplete draft; inspect and remove or repair it before retrying, because a rerun cannot create a second release for the same tag.
+
+This package has identity `GiddyGiddy.TimesheetAssistant` and is a separate installation from the self-signed Preview. It is not an in-place Preview upgrade: back up and explicitly import data into its new profile, then re-enter credentials. Clean-machine installation, actual data migration and live cloud signing still require validation. Verify the signed package under your organization's trust policy.
+
+Encryption restricts access to the archive contents only: this public repository's source, older public CI artifacts, previously downloaded files and files redistributed by password holders remain accessible. ZIP entry names may be visible without the password. Rotate a compromised password and redistribute a newly encrypted archive; existing copies cannot be recalled.
 
 ### Preview MSIX: direct download and local pilot signing
 
@@ -284,13 +299,13 @@ $cert = New-SelfSignedCertificate -Type Custom -Subject "CN=TimesheetAssistantPr
 
 Signing creates a separate `-pilot-signed.msix`, its SHA256 file and a **public-only** `.msix.cer`. It refuses an existing signed output, checks the Preview identity, certificate subject/validity/code-signing usage, and uses the private key directly from `CurrentUser\My`. It never exports the private key, changes trusted stores or installs the application. This self-signed, untimestamped certificate is only for a controlled pilot; keep its private key secure and plan renewal before expiry.
 
-For distribution, use a GitHub **prerelease**, not GitHub Packages: a signed MSIX is a downloadable release asset, not a container/NuGet registry package. Attach the pilot-signed MSIX, its checksum and the public certificate, plus the portable ZIP/checksum if desired. Pin the release tag to the exact successful build commit and identify that run and certificate thumbprint in the notes. Builds/artifacts alone do not automatically publish a Release.
+For a controlled pilot, distribute the signed MSIX and checksum in an encrypted release archive and provide the public certificate separately. Pin the release tag to the exact build commit and identify the certificate thumbprint in the notes. The automated trusted-release workflow above is separate from this self-signed pilot process.
 
 Before installing, recipients must verify the checksum and independently confirm the public certificate's thumbprint with the publisher. An administrator must explicitly approve trusting that **public certificate** in `LocalMachine\TrustedPeople` according to organizational policy; do not install a private PFX or add it as a trusted root. Neither build nor signing scripts do this. After trust approval, Windows can verify the signature and the user can install the MSIX through App Installer or `Add-AppxPackage`. Never disable signature validation to install it.
 
 Launch **Timesheet Assistant Preview** from Start. It begins with a fresh profile and no Microsoft 365 token. Back up the profile before uninstalling: Windows can remove MSIX `LocalState` data. To import existing data, install but do not launch Preview, obtain its family using `Get-AppxPackage -Name GiddyGiddy.TimesheetAssistant.Preview`, and pass the new full `LocalState\TimesheetAssistant` path to the existing offline `import-data --destination` command. The source must be closed and the destination must not exist; nothing imports credentials automatically.
 
-Installation, real MSIX activation, update preservation and uninstall behavior still require pilot testing. A future Store identity must come from Partner Center; Intune/production signing and identity choices must be settled separately. Switching from this Preview publisher/identity to production is a separate installation and explicit data migration, not an in-place update.
+The Preview was installed and launched on one machine, then upgraded from 0.1.0.2 to 0.1.0.3 with registry and MCP configuration preserved. Clean-machine installation, actual timesheet/credential preservation and uninstall behavior remain unverified. A future Store identity must come from Partner Center. Switching from this Preview publisher/identity to the trusted release is a separate installation and explicit data migration, not an in-place update.
 
 ## Setup
 

@@ -48,16 +48,3 @@ jobs:
 
       - name: Build and validate unsigned Preview MSIX
         run: .\windows\build-msix.ps1 -Python "${{ steps.python.outputs.python-path }}" -Revision $env:GITHUB_RUN_NUMBER
-
-      - name: Upload unsigned ZIP, Preview MSIX and checksums
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: windows-x64-unsigned-${{ github.sha }}-${{ github.run_attempt }}
-          path: |
-            dist\TimesheetAssistant-*-win-x64-unsigned.zip
-            dist\TimesheetAssistant-*-win-x64-unsigned.zip.sha256
-            dist\TimesheetAssistantPreview-*-x64-unsigned.msix
-            dist\TimesheetAssistantPreview-*-x64-unsigned.msix.sha256
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
