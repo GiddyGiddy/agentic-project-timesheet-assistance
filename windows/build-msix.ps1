@@ -1,6 +1,7 @@
 param(
     [string]$Python = (Join-Path $PSScriptRoot '..\.venv\Scripts\python.exe'),
-    [ValidateRange(0, 65535)][int]$Revision = 0
+    [ValidateRange(0, 65535)][int]$Revision = 0,
+    [string]$ReleasePublisher = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,15 +27,33 @@ try {
     & (Join-Path $PSScriptRoot 'msix\generate-assets.ps1') -Destination (Join-Path $stage 'Assets')
     [xml]$manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'msix\AppxManifest.xml') -Raw
     $manifest.Package.Identity.SetAttribute('Version', $packageVersion.ToString())
+    $packageName = 'TimesheetAssistantPreview'
+    if ($ReleasePublisher) {
+        $publisher = [Security.Cryptography.X509Certificates.X500DistinguishedName]::new($ReleasePublisher)
+        if ($publisher.Name -eq 'CN=TimesheetAssistantPreview') {
+            throw 'The trusted release must use a separate publisher from the pilot.'
+        }
+        $manifest.Package.Identity.SetAttribute('Name', 'GiddyGiddy.TimesheetAssistant')
+        $manifest.Package.Identity.SetAttribute('Publisher', $ReleasePublisher)
+        $manifest.Package.Properties.DisplayName = 'Timesheet Assistant'
+        $manifest.Package.Properties.PublisherDisplayName = 'Timesheet Assistant'
+        $namespaces = [System.Xml.XmlNamespaceManager]::new($manifest.NameTable)
+        $namespaces.AddNamespace('f', 'http://schemas.microsoft.com/appx/manifest/foundation/windows10')
+        $namespaces.AddNamespace('uap', 'http://schemas.microsoft.com/appx/manifest/uap/windows10')
+        $visual = $manifest.SelectSingleNode('/f:Package/f:Applications/f:Application/uap:VisualElements', $namespaces)
+        if ($null -eq $visual) { throw 'MSIX visual elements are missing.' }
+        $visual.SetAttribute('DisplayName', 'Timesheet Assistant')
+        $packageName = 'TimesheetAssistant'
+    }
     $manifest.Save((Join-Path $stage 'AppxManifest.xml'))
     $temporary = Join-Path $work 'preview.msix'
     & $makeAppx pack /d $stage /p $temporary /o
     if ($LASTEXITCODE -ne 0) { throw 'MakeAppx validation/packaging failed.' }
-    $package = Join-Path $root "dist\TimesheetAssistantPreview-$packageVersion-x64-unsigned.msix"
+    $package = Join-Path $root "dist\$packageName-$packageVersion-x64-unsigned.msix"
     Move-Item -LiteralPath $temporary -Destination $package -Force
     $hash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText("$package.sha256", "$hash  $([IO.Path]::GetFileName($package))`n")
-    Write-Output "Unsigned Preview MSIX: $package"
+    Write-Output "Unsigned MSIX: $package"
     Write-Output 'Signing and explicit certificate trust are required before normal installation.'
 }
 finally {

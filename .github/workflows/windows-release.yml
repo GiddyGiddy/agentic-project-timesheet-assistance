@@ -1,0 +1,183 @@
+name: Encrypted Windows draft release
+
+on:
+  push:
+    tags: ['v*.*.*.*']
+
+permissions: {}
+
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Test, sign and create encrypted draft
+    runs-on: windows-2025
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.14.2'
+          architecture: x64
+
+      - name: Validate release tag and configuration
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          RELEASE_ARCHIVE_PASSWORD: ${{ secrets.RELEASE_ARCHIVE_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -notmatch '^v(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})$') {
+            throw 'Release tags must be vMAJOR.MINOR.PATCH.REVISION, with four MSIX version components.'
+          }
+          $version = [version]$env:RELEASE_TAG.Substring(1)
+          if (@($version.Major, $version.Minor, $version.Build, $version.Revision) | Where-Object { $_ -gt 65535 }) {
+            throw 'Every MSIX version component must be at most 65535.'
+          }
+          $projectVersion = python -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])"
+          if ($LASTEXITCODE -ne 0 -or $projectVersion -ne "$($version.Major).$($version.Minor).$($version.Build)") {
+            throw 'The tag version must match the project version in pyproject.toml.'
+          }
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'The release tag must point to a commit on main.' }
+          foreach ($name in @('RELEASE_PUBLISHER', 'SIGNING_ENDPOINT', 'SIGNING_ACCOUNT', 'SIGNING_PROFILE',
+              'AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID', 'RELEASE_ARCHIVE_PASSWORD')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "The release environment is missing $name."
+            }
+          }
+          if ($env:RELEASE_ARCHIVE_PASSWORD.Length -lt 16 -or $env:RELEASE_ARCHIVE_PASSWORD -match '[\r\n]') {
+            throw 'The release archive password must be at least 16 characters without line breaks.'
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "revision=$($version.Revision)" >> $env:GITHUB_OUTPUT
+
+      - name: Install application and build dependencies
+        run: python -m pip install -e ".[dev,build]"
+
+      - name: Check dependency compatibility and run regression tests
+        run: |
+          python -m pip check
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency compatibility check failed.' }
+          python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { throw 'Regression tests failed.' }
+
+      - name: Build and verify Windows bundle
+        run: .\windows\build.ps1 -Python "${{ steps.python.outputs.python-path }}"
+
+      - name: Build separate trusted-identity MSIX
+        env:
+          RELEASE_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          RELEASE_REVISION: ${{ steps.version.outputs.revision }}
+        run: .\windows\build-msix.ps1 -Python "${{ steps.python.outputs.python-path }}" -Revision $env:RELEASE_REVISION -ReleasePublisher $env:RELEASE_PUBLISHER
+
+      - name: Authenticate to Azure using GitHub OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign MSIX with Microsoft Artifact Signing
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\TimesheetAssistant-${{ steps.version.outputs.version }}-x64-unsigned.msix
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-azure-cli-credential: false
+          cache-dependencies: false
+
+      - name: Verify signature and publisher
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $unsigned = Join-Path $PWD "dist\TimesheetAssistant-$env:RELEASE_VERSION-x64-unsigned.msix"
+          $signature = Get-AuthenticodeSignature -LiteralPath $unsigned
+          if ($signature.Status -ne 'Valid' -or
+              $signature.SignerCertificate.Subject -ne $env:RELEASE_PUBLISHER -or
+              $null -eq $signature.TimeStamperCertificate) {
+            throw 'The MSIX signature, timestamp or publisher verification failed.'
+          }
+          Rename-Item -LiteralPath $unsigned -NewName "TimesheetAssistant-$env:RELEASE_VERSION-x64-signed.msix"
+
+      - name: Create and verify AES-256 release archive
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_ARCHIVE_PASSWORD: ${{ secrets.RELEASE_ARCHIVE_PASSWORD }}
+        run: |
+          python .\windows\encrypt_release.py `
+            "dist\TimesheetAssistant-$env:RELEASE_VERSION-x64-signed.msix" `
+            "dist\TimesheetAssistant-$env:RELEASE_VERSION-x64-AES256.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Encrypted release verification failed.' }
+
+      - name: Create draft and upload encrypted assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          API_URL: ${{ github.api_url }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $body = @{
+            tag_name = $env:RELEASE_TAG
+            name = "Timesheet Assistant $env:RELEASE_VERSION"
+            draft = $true
+            prerelease = $true
+            generate_release_notes = $true
+            body = 'This is a draft. Verify installation before publishing. The AES-256 ZIP contains a signed MSIX and its checksum; share the archive password separately. This package has a separate identity from the self-signed Preview and requires explicit data migration.'
+          } | ConvertTo-Json -Compress
+          $release = Invoke-RestMethod -Method Post -Uri "$env:API_URL/repos/$env:REPOSITORY/releases" -Headers $headers -ContentType 'application/json' -Body $body
+          if (-not $release.draft -or $release.tag_name -ne $env:RELEASE_TAG) { throw 'GitHub did not create the expected draft release.' }
+          $archive = "TimesheetAssistant-$env:RELEASE_VERSION-x64-AES256.zip"
+          try {
+            foreach ($name in @($archive, "$archive.sha256")) {
+              $path = Join-Path $PWD "dist\$name"
+              $digest = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+              $upload = $release.upload_url.Split('{')[0] + '?name=' + [Uri]::EscapeDataString($name)
+              $asset = Invoke-RestMethod -Method Post -Uri $upload -Headers $headers -ContentType 'application/octet-stream' -InFile $path
+              if ($asset.name -ne $name -or $asset.state -ne 'uploaded' -or $asset.digest -ne "sha256:$digest") {
+                throw "Uploaded asset verification failed: $name."
+              }
+            }
+          }
+          catch {
+            Write-Warning "The draft for $env:RELEASE_TAG may be incomplete. Inspect it before retrying."
+            throw
+          }
+          Write-Output "Encrypted draft release created for $env:RELEASE_TAG."
