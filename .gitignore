@@ -1,4 +1,10 @@
 .env
+*.dpapi
+*.pfx
+*.p12
+desktop.lock
+desktop.log*
+Skill.md
 .venv/
 __pycache__/
 *.py[cod]

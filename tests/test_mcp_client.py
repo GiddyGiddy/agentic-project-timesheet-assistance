@@ -5,6 +5,38 @@ import pytest
 from langchain_core.tools import ToolException
 
 from src.integrations.mcp_client import MCPClient, parse_records
+from src.integrations.mcp_client import _check_workiq_error
+from langchain_mcp_adapters.interceptors import MCPToolCallRequest
+from mcp.types import CallToolResult
+
+
+@pytest.mark.parametrize("error", [
+    {"error": {"code": "BadRequest", "message": "private source text"}},
+    {"code": "BadRequest", "message": "private source text"},
+])
+async def test_workiq_structured_only_error_preserves_safe_diagnostics(error):
+    async def handler(request):
+        return CallToolResult(
+            content=[], isError=True,
+            structuredContent={"results": [{"statusCode": 400, "error": error}]},
+        )
+
+    request = MCPToolCallRequest(name="fetch", args={}, server_name="workiq")
+    with pytest.raises(RuntimeError, match="HTTP 400, BadRequest") as caught:
+        await _check_workiq_error(request, handler)
+    assert "private source text" not in str(caught.value)
+
+
+async def test_workiq_successful_structured_response_is_unchanged():
+    response = CallToolResult(
+        content=[], structuredContent={"results": [{"statusCode": 200, "data": {"value": []}}]},
+    )
+
+    async def handler(request):
+        return response
+
+    request = MCPToolCallRequest(name="fetch", args={}, server_name="workiq")
+    assert await _check_workiq_error(request, handler) is response
 
 
 async def test_stdio_mcp_tool_and_argument_mapping(tmp_path):

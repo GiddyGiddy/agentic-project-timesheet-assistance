@@ -18,10 +18,12 @@
         <button class="nav-item" data-tab="scheduler"><span>◴</span> Scheduler</button>
         <button class="nav-item" data-tab="projects"><span>▦</span> Projects</button>
         <button class="nav-item" data-tab="settings"><span>⚙</span> Setup &amp; integrations</button>
+        <button id="exit-application" class="button secondary" type="button" hidden>Exit application</button>
       </nav>
       <div class="sidebar-note">
         <span class="status-dot"></span><strong>Local workspace</strong>
         <p>Single-user mode. Your entries stay unapproved until you confirm them.</p>
+        <p>Closing this tab does not stop the application or its scheduler.</p>
       </div>
     </aside>
     <main>
@@ -91,12 +93,37 @@
         <section id="settings" class="page" hidden>
           <div class="heading"><div><p class="eyebrow">CONFIGURATION</p><h1>Setup &amp; integrations</h1><p>Connect your services and configure your timesheet template.</p></div></div>
           <div class="stack">
+            <form id="profile-form" class="card section-card" hidden>
+              <div class="section-title"><div><h2>Service settings</h2><p>Saved settings are encrypted for your Windows account. Saving does not test connectivity.</p></div></div>
+              <p id="profile-status" class="hint"></p>
+              <p id="profile-location" class="hint"></p>
+              <div class="form-grid">
+                <label class="wide">Azure OpenAI resource endpoint<input name="azure_openai_endpoint" type="url" placeholder="https://your-resource.openai.azure.com" required></label>
+                <label>Deployment name<input name="azure_openai_deployment_name" maxlength="128" required></label>
+                <label>API version<input name="azure_openai_api_version" required></label>
+                <label class="wide">API key <span class="optional">(blank keeps the saved key)</span><input name="azure_openai_api_key" type="password" autocomplete="new-password"></label>
+                <label class="check wide"><input name="clear_api_key" type="checkbox"> Remove the saved API key</label>
+                <label>Microsoft Entra tenant ID<input name="tenant_id" required></label>
+                <label>Public client application ID<input name="client_id" required></label>
+                <label>Time zone<input name="timezone" placeholder="Europe/Berlin" required></label>
+              </div>
+              <p id="profile-key-status" class="hint"></p>
+              <p id="profile-overrides" class="hint"></p>
+              <div class="form-actions"><button id="save-profile" class="button primary" type="submit">Save service settings</button></div>
+              <p class="hint">Next: replace the example project in Projects, upload your Excel template below, configure its layout, and sign in to Microsoft 365. Sign in again after changing tenant or client ID.</p>
+            </form>
             <article class="card section-card"><div class="section-title"><div><h2>Microsoft 365</h2><p>Configure a compatible MCP server and its four operations in <code>config\mcp_servers.json</code>.</p></div><span class="badge">MCP</span></div>
               <div id="mcp-status" class="status-grid"></div>
               <div class="action-row"><button id="workiq-sign-in" class="button secondary" type="button">Sign in to Microsoft 365</button></div>
               <p id="workiq-message" class="hint">Sign-in is kept in memory and must be repeated after restarting the dashboard. Sign-in alone does not configure activity collection.</p>
               <p class="hint">Configuration status does not verify connectivity. Teams replies are not supported. See the project README for the required tool contract.</p>
             </article>
+            <form id="template-form" class="card section-card" hidden>
+              <div class="section-title"><div><h2>Excel template file</h2><p>Upload a macro-free .xlsx file, at most 10 MB. An existing template is never replaced.</p></div></div>
+              <label>Template file<input id="template-file" type="file" accept=".xlsx" required></label>
+              <p id="template-status" class="hint"></p>
+              <div class="form-actions"><button id="upload-template" class="button secondary" type="submit">Upload template</button></div>
+            </form>
             <form id="excel-form" class="card section-card"><div class="section-title"><div><h2>Excel layout</h2><p>Coordinates refer to your existing .xlsx template. Blank day mapping uses the header row.</p></div></div>
               <div class="form-grid">
                 <label>Sheet name<input name="sheet_name" required></label>

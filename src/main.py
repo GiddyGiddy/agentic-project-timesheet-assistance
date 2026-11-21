@@ -3,6 +3,8 @@ import asyncio
 import calendar
 import json
 import logging
+import os
+import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -11,7 +13,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
-from config.settings import Settings
+from config.settings import Settings, default_user_data_dir
+from config.storage import import_user_data, initialize_user_storage
 from src.agents.excel_agent import export_month
 from src.agents.mapper_agent import validate_entries
 from src.database.repository import Repository
@@ -165,6 +168,13 @@ def parser() -> argparse.ArgumentParser:
     schedule = commands.add_parser("schedule", help="Run the local 18:00 scheduler")
     schedule.add_argument("--workiq-sign-in", action="store_true")
     commands.add_parser("workiq-check", help="Sign in and list Work IQ MCP tools")
+    importer = commands.add_parser("import-data", help="Import a stopped application's data into a new profile")
+    importer.add_argument("--source", type=Path, required=True, help="Existing application data root")
+    importer.add_argument("--destination", type=Path, help="New, absolute per-user data directory")
+    importer.add_argument(
+        "--source-closed", action="store_true", required=True,
+        help="Confirm the source application and its scheduler are stopped",
+    )
     return result
 
 
@@ -196,7 +206,7 @@ async def run_scheduler(settings: Settings, registry: Registry) -> None:
 
 async def check_workiq(settings: Settings) -> None:
     await sign_in_cli()
-    tools = await MCPClient(settings.mcp_config_path).tools("workiq")
+    tools = await MCPClient(settings.mcp_config_path, settings=settings).tools("workiq")
     print("Work IQ tools:", ", ".join(sorted(tool.name for tool in tools)))
 
 
@@ -209,7 +219,15 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parser().parse_args()
     try:
+        if args.command == "import-data":
+            destination = args.destination
+            if destination is None:
+                configured = os.environ.get("TIMESHEET_DATA_DIR")
+                destination = Path(configured) if configured is not None else default_user_data_dir()
+            print(f"Imported data into {import_user_data(args.source, destination)}")
+            return
         settings = Settings()
+        initialize_user_storage(settings)
         registry = load_registry(settings.projects_registry_path)
         if args.command == "workiq-check":
             asyncio.run(check_workiq(settings))
@@ -235,7 +253,7 @@ def main() -> None:
                 asyncio.run(run_with_sign_in(action))
             else:
                 asyncio.run(action())
-    except (ValueError, OSError, json.JSONDecodeError) as exc:
+    except (ValueError, OSError, sqlite3.Error) as exc:
         raise SystemExit(f"Error: {exc}") from exc
 
 

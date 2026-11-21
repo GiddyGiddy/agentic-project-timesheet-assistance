@@ -18,6 +18,7 @@ class DashboardScheduler:
         self.scheduler: AsyncIOScheduler | None = None
         self.timezone: str | None = None
         self.last_runs: dict[str, dict[str, str]] = {}
+        self.closed = False
 
     @property
     def running(self) -> bool:
@@ -26,6 +27,8 @@ class DashboardScheduler:
     async def start(self) -> None:
         async with self.control_lock:
             async with self.lock:
+                if self.closed:
+                    raise ValueError("Application is shutting down")
                 if self.running:
                     raise ValueError("Dashboard scheduler is already running")
                 timezone = Settings().timezone
@@ -47,6 +50,18 @@ class DashboardScheduler:
                 self.scheduler = None
                 self.timezone = None
 
+    async def close(self) -> None:
+        async with self.control_lock:
+            self.closed = True
+            if self.running and self.scheduler is not None:
+                self.scheduler.pause()
+            async with self.lock:
+                if self.running and self.scheduler is not None:
+                    self.scheduler.shutdown(wait=False)
+                    await asyncio.sleep(0)
+                self.scheduler = None
+                self.timezone = None
+
     def status(self) -> dict:
         jobs = {}
         if self.running and self.scheduler is not None:
@@ -61,6 +76,9 @@ class DashboardScheduler:
 
     async def _run(self, job: str) -> None:
         async with self.lock:
+            if self.closed:
+                logger.info("Skipping scheduled %s during application shutdown", job)
+                return
             try:
                 settings = Settings()
                 registry = load_registry(settings.projects_registry_path)

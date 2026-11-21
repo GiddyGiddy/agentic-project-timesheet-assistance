@@ -12,7 +12,7 @@ from src.integrations.mcp_client import MCPClient
 
 
 def build_workflow(settings: Settings, registry: Registry, repository: Repository, checkpointer):
-    client = MCPClient(settings.mcp_config_path)
+    client = MCPClient(settings.mcp_config_path, settings=settings)
     graph = StateGraph(TimesheetState)
 
     async def ingestion_node(state: TimesheetState) -> dict:

@@ -5,6 +5,7 @@ from datetime import date, datetime
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
+from httpx import ASGITransport, AsyncClient
 
 from src.database.repository import Repository
 from src.graph.state import Entry
@@ -80,7 +81,7 @@ def test_workiq_dashboard_sign_in_does_not_expose_tokens(dashboard, monkeypatch)
             return None
 
     class FakeMCP:
-        def __init__(self, path):
+        def __init__(self, path, *, settings=None):
             pass
 
         async def tools(self, server):
@@ -206,6 +207,8 @@ def test_scheduler_start_stop(dashboard):
     assert client.post("/api/scheduler/start", headers=headers).status_code == 409
     assert client.post("/api/scheduler/stop", headers=headers).json()["running"] is False
     assert client.post("/api/scheduler/stop", headers=headers).status_code == 409
+    assert client.post("/api/scheduler/start", headers=headers).json()["running"] is True
+    assert client.post("/api/scheduler/stop", headers=headers).json()["running"] is False
 
 
 async def test_scheduler_stop_waits_for_active_work(dashboard, monkeypatch):
@@ -245,3 +248,77 @@ async def test_scheduler_reports_job_failure(dashboard, monkeypatch):
         assert "already pending" in result["message"]
     finally:
         await scheduler.stop()
+
+
+async def test_exit_blocks_new_requests_and_drains_active_operation(dashboard, monkeypatch):
+    started, finish, exited = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    callbacks = []
+
+    async def active_work(*args, **kwargs):
+        started.set()
+        await finish.wait()
+        return {"finished": True}
+
+    def request_exit():
+        callbacks.append(True)
+        exited.set()
+
+    monkeypatch.setattr("src.web.app.graph_action", active_work)
+    app = create_app("exit-token", on_shutdown=request_exit)
+    async with app.router.lifespan_context(app), AsyncClient(
+        transport=ASGITransport(app, client=("127.0.0.1", 12345)),
+        base_url="http://127.0.0.1:8765", headers={"X-Timesheet-Token": "exit-token"},
+    ) as client:
+        assert (await client.post("/api/lifecycle", headers={"X-Timesheet-Token": ""})).status_code == 403
+        assert (await client.post("/api/lifecycle", headers={"Origin": "https://untrusted.invalid"})).status_code == 403
+        work = asyncio.create_task(client.post("/api/daily/2026-11-19/daily", json={}))
+        await asyncio.wait_for(started.wait(), 2)
+        try:
+            assert (await client.post("/api/lifecycle")).status_code == 202
+            assert (await client.get("/api/lifecycle")).json()["stopping"]
+            assert not exited.is_set()
+            assert (await client.post("/api/scheduler/start")).status_code == 409
+            assert (await client.get("/api/registry")).status_code == 409
+            assert (await client.post("/api/lifecycle")).status_code == 202
+        finally:
+            finish.set()
+            assert (await work).status_code == 200
+        await asyncio.wait_for(exited.wait(), 2)
+        assert callbacks == [True]
+
+
+def test_unmanaged_app_cannot_exit(dashboard):
+    client, _, _ = dashboard
+    headers = {"X-Timesheet-Token": "private-token"}
+    assert not client.get("/api/lifecycle", headers=headers).json()["exit_available"]
+    assert client.post("/api/lifecycle", headers=headers).status_code == 405
+    assert client.get("/api/registry", headers=headers).status_code == 200
+
+
+async def test_scheduler_close_drains_active_job_skips_queued_job_and_prevents_restart(dashboard, monkeypatch):
+    started, finish = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def daily(*args, **kwargs):
+        calls.append(True)
+        started.set()
+        await finish.wait()
+
+    monkeypatch.setattr("src.web.scheduler.graph_action", daily)
+    scheduler = DashboardScheduler(asyncio.Lock())
+    await scheduler.start()
+    active = asyncio.create_task(scheduler._daily_job())
+    await asyncio.wait_for(started.wait(), 2)
+    queued = asyncio.create_task(scheduler._daily_job())
+    closing = asyncio.create_task(scheduler.close())
+    await asyncio.sleep(0)
+    try:
+        assert not closing.done()
+    finally:
+        finish.set()
+        await asyncio.gather(active, queued, closing)
+    assert calls == [True]
+    assert not scheduler.running
+    with pytest.raises(ValueError, match="shutting down"):
+        await scheduler.start()
+    await scheduler.close()

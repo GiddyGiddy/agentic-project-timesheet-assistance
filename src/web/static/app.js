@@ -13,6 +13,11 @@ let registry = null;
 let currentDay = null;
 let editable = false;
 let busy = false;
+let exiting = false;
+const serviceFields = [
+  "azure_openai_endpoint", "azure_openai_deployment_name", "azure_openai_api_version",
+  "tenant_id", "client_id", "timezone",
+];
 
 function notice(message, error = false) {
   const element = $("#notice");
@@ -22,6 +27,7 @@ function notice(message, error = false) {
 }
 
 async function api(path, options = {}) {
+  if (exiting && path !== "/api/lifecycle") throw new Error("Application is exiting. Relaunch it to continue.");
   if (!token) throw new Error("Open the dashboard using the private URL printed by the server.");
   const response = await fetch(path, {
     ...options,
@@ -65,6 +71,42 @@ function renderMcpStatus(data) {
     item.append(document.createTextNode(configured ? "Configured" : "Not configured"));
     status.append(item);
   }
+}
+
+function renderProfileSetup(setup) {
+  const profile = setup.profile_setup;
+  const form = $("#profile-form");
+  form.hidden = !profile;
+  $("#template-form").hidden = !profile;
+  if (!profile) return;
+  for (const field of serviceFields) {
+    form.elements[field].value = profile[field] ?? "";
+    form.elements[field].disabled = profile.environment_overrides.includes(field);
+  }
+  const keyOverridden = profile.environment_overrides.includes("azure_openai_api_key");
+  form.elements.azure_openai_api_key.value = "";
+  form.elements.azure_openai_api_key.disabled = keyOverridden;
+  form.elements.clear_api_key.checked = false;
+  form.elements.clear_api_key.disabled = keyOverridden;
+  $("#profile-status").textContent = profile.services_configured
+    ? "Service settings are present. Connectivity has not been tested."
+    : "First-run setup: enter your service settings before generating proposals.";
+  $("#profile-location").textContent = `Local profile: ${profile.data_directory}`;
+  $("#profile-key-status").textContent = profile.api_key_configured
+    ? "An API key is configured; it is never sent back to this page."
+    : "No API key is configured.";
+  $("#profile-overrides").textContent = profile.environment_overrides.length
+    ? `Environment-controlled fields are read-only: ${profile.environment_overrides.join(", ")}. Remove those overrides before changing them here.`
+    : "Blank API key keeps the saved key. Microsoft 365 sign-in tokens are held in memory only.";
+  renderTemplateStatus(profile);
+}
+
+function renderTemplateStatus(profile) {
+  $("#template-file").disabled = profile.template_available;
+  $("#upload-template").disabled = profile.template_available;
+  $("#template-status").textContent = profile.template_available
+    ? "A template is already available and will not be overwritten. Check its Excel layout below."
+    : "Choose your existing template. Uploading does not validate its project codes or export layout.";
 }
 
 function renderExcel(layout) {
@@ -358,6 +400,50 @@ $("#download-month").addEventListener("click", handle(async () => {
 $("#scheduler-start").addEventListener("click", handle(() => schedulerAction("start")));
 $("#scheduler-stop").addEventListener("click", handle(() => schedulerAction("stop")));
 $("#scheduler-refresh").addEventListener("click", handle(refreshScheduler));
+$("#exit-application").addEventListener("click", handle(async () => {
+  if (!confirm("Exit Timesheet Assistant? New operations will be blocked, the scheduler will stop, and any active operation will finish first. Unsaved form edits will be lost.")) return;
+  await api("/api/lifecycle", {method: "POST"});
+  exiting = true;
+  $$("button, input, textarea, select").forEach(element => { element.disabled = true; });
+  notice("Exit requested. Active work will finish before the application closes. You can close this tab; launch Timesheet Assistant again to reopen it.");
+}));
+$("#profile-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = $("#save-profile");
+  button.disabled = true;
+  try {
+    const data = Object.fromEntries(serviceFields.map(field => [field, form.elements[field].value]));
+    data.azure_openai_api_key = form.elements.azure_openai_api_key.value || null;
+    data.clear_api_key = form.elements.clear_api_key.checked;
+    await api("/api/setup", {method: "PUT", body: JSON.stringify(data)});
+    form.elements.azure_openai_api_key.value = "";
+    renderProfileSetup(await api("/api/setup"));
+    notice("Service settings saved with Windows protection. Sign in again if tenant or client ID changed; saving does not test connectivity.");
+  } catch (error) {
+    notice(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+$("#template-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const button = $("#upload-template");
+  button.disabled = true;
+  try {
+    const file = $("#template-file").files[0];
+    if (!file || file.size > 10 * 1024 * 1024) throw new Error("Choose an .xlsx template at most 10 MB.");
+    await api("/api/setup/template", {
+      method: "POST", body: file,
+      headers: {"Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    });
+    renderTemplateStatus((await api("/api/setup")).profile_setup);
+    notice("Template uploaded. Configure its Excel layout and project codes before exporting.");
+  } catch (error) {
+    button.disabled = false;
+    notice(error.message, true);
+  }
+});
 $("#workiq-sign-in").addEventListener("click", handle(async () => {
   const button = $("#workiq-sign-in");
   button.disabled = true;
@@ -413,10 +499,30 @@ async function initialize() {
     const [setup, loadedRegistry] = await Promise.all([api("/api/setup"), api("/api/registry")]);
     registry = loadedRegistry;
     renderMcpStatus(setup);
+    renderProfileSetup(setup);
     renderProjects(registry.projects);
     renderExcel(registry.excel);
+    if (setup.profile_setup && (!setup.profile_setup.services_configured || !setup.profile_setup.template_available)) {
+      switchTab("settings");
+    }
+  } catch (error) {
+    notice(error.message, true);
+  }
+}
+
+async function initializeLifecycle() {
+  try {
+    const lifecycle = await api("/api/lifecycle");
+    $("#exit-application").hidden = !lifecycle.exit_available;
+    if (lifecycle.stopping) {
+      exiting = true;
+      $$("button, input, textarea, select").forEach(element => { element.disabled = true; });
+      notice(lifecycle.shutdown_failed ? "Clean shutdown failed. Check the application log before restarting."
+        : "Application is shutting down. Active work must finish first.", lifecycle.shutdown_failed);
+    }
   } catch (error) {
     notice(error.message, true);
   }
 }
 initialize();
+initializeLifecycle();
