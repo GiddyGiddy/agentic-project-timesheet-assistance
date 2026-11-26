@@ -189,10 +189,128 @@ def test_monthly_export_blocks_pending_reviews_and_preserves_template(dashboard,
     assert result["P2"].value == 1
     assert result["AG2"].value == "=SUM(B2:AF2)"
     assert template.read_bytes() == original
-    assert client.post("/api/monthly/2026-11/export", headers=headers).status_code == 409
+    before = output.read_bytes()
+    repository.replace_day(date(2026, 11, 2), [
+        Entry(project_code="P1", hours=3, summary="Updated", confidence=1)
+    ], {})
+    response = client.post("/api/monthly/2026-11/export", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["filename"] == "timesheet-2026-11-2.xlsx"
+    latest = tmp_path / "output" / response.json()["filename"]
+    assert load_workbook(latest).active["C2"].value == 3
+    assert output.read_bytes() == before
     assert client.get("/api/monthly/2026-11/download").status_code == 403
-    assert client.get("/api/monthly/2026-11/download", headers=headers).content == output.read_bytes()
+    assert client.get("/api/monthly/2026-11/download", headers=headers).content == latest.read_bytes()
     assert client.get("/api/monthly/2026-13", headers=headers).status_code == 422
+
+
+def test_monthly_export_creates_missing_template_from_layout(dashboard, tmp_path):
+    client, database, _ = dashboard
+    headers = {"X-Timesheet-Token": "private-token"}
+    template = tmp_path / "template.xlsx"
+    assert client.post("/api/monthly/2026-11/export", headers=headers).status_code == 400
+    assert not template.exists()
+    repository = Repository(f"sqlite:///{database.as_posix()}")
+    repository.replace_day(date(2026, 11, 2), [
+        Entry(project_code="P1", hours=2, summary="Approved", confidence=1)
+    ], {})
+    response = client.post("/api/monthly/2026-11/export", headers=headers)
+    assert response.status_code == 200
+    assert load_workbook(template)["Timesheet"]["A2"].value == "P1"
+    output = tmp_path / "output" / "timesheet-2026-11.xlsx"
+    assert load_workbook(output)["Timesheet"]["C2"].value == 2
+    assert client.post("/api/monthly/2026-11/export", headers=headers).json()["filename"] == "timesheet-2026-11-2.xlsx"
+
+
+def test_rowwise_layout_and_export_coexist_with_columnwise_export(dashboard, tmp_path):
+    client, database, _ = dashboard
+    headers = {"X-Timesheet-Token": "private-token"}
+    repository = Repository(f"sqlite:///{database.as_posix()}")
+    repository.replace_day(date(2026, 11, 2), [
+        Entry(project_code="P1", hours=2, summary="Approved", confidence=1)
+    ], {})
+    assert client.post("/api/monthly/2026-11/export", headers=headers).status_code == 200
+    old_output = (tmp_path / "output" / "timesheet-2026-11.xlsx").read_bytes()
+    registry = client.get("/api/registry", headers=headers).json()
+    registry["projects"][0]["project_name"] = "Example project"
+    registry["excel"].update({
+        "layout_mode": "rows", "date_format": "dd.mm.yyyy", "date_locale": "de-DE",
+    })
+    assert client.put("/api/registry", headers=headers, json=registry).status_code == 200
+    assert "date_locale" not in client.get("/api/registry", headers=headers).json()["excel"]
+    assert not client.get("/api/monthly/2026-11", headers=headers).json()["output_exists"]
+    response = client.post("/api/monthly/2026-11/export", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["filename"] == "timesheet-2026-11-rowwise.xlsx"
+    path = tmp_path / "output" / response.json()["filename"]
+    sheet = load_workbook(path).worksheets[0]
+    assert sheet["B1"].value == "Example project"
+    assert sheet["B2"].value == "P1"
+    assert sheet["A6"].value == datetime(2026, 11, 2)
+    assert sheet["A6"].number_format == "[$-409]dddd"
+    assert sheet["B6"].value == datetime(2026, 11, 2)
+    assert sheet["B6"].number_format == "dd.mm.yyyy"
+    assert sheet["C6"].value == 2
+    assert (tmp_path / "template_rowwise.xlsx").is_file()
+    assert (tmp_path / "output" / "timesheet-2026-11.xlsx").read_bytes() == old_output
+    assert client.get("/api/monthly/2026-11/download", headers=headers).content == path.read_bytes()
+    registry["excel"]["layout_mode"] = "columns"
+    assert client.put("/api/registry", headers=headers, json=registry).status_code == 200
+    assert client.get("/api/monthly/2026-11/download", headers=headers).content == old_output
+
+
+def test_rowwise_regeneration_finds_latest_number_even_if_original_was_removed(dashboard, tmp_path):
+    client, database, _ = dashboard
+    headers = {"X-Timesheet-Token": "private-token"}
+    repository = Repository(f"sqlite:///{database.as_posix()}")
+    repository.replace_day(date(2026, 11, 2), [
+        Entry(project_code="P1", hours=2, summary="Approved", confidence=1)
+    ], {})
+    registry = client.get("/api/registry", headers=headers).json()
+    registry["excel"]["layout_mode"] = "rows"
+    assert client.put("/api/registry", headers=headers, json=registry).status_code == 200
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    (output_dir / "timesheet-2026-11-rowwise-2.xlsx").write_bytes(b"second")
+    (output_dir / "timesheet-2026-11-rowwise-10.xlsx").write_bytes(b"tenth")
+    (output_dir / "timesheet-2026-11-rowwise-backup.xlsx").write_bytes(b"unrelated")
+    assert client.get("/api/monthly/2026-11", headers=headers).json()["output_exists"]
+    assert client.get("/api/monthly/2026-11/download", headers=headers).content == b"tenth"
+    response = client.post("/api/monthly/2026-11/export", headers=headers)
+    assert response.json()["filename"] == "timesheet-2026-11-rowwise-11.xlsx"
+    latest = output_dir / response.json()["filename"]
+    assert load_workbook(latest).worksheets[0]["C6"].value == 2
+    assert client.get("/api/monthly/2026-11/download", headers=headers).content == latest.read_bytes()
+    assert (output_dir / "timesheet-2026-11-rowwise-10.xlsx").read_bytes() == b"tenth"
+
+
+def test_export_retries_if_another_process_creates_the_same_filename(dashboard, tmp_path, monkeypatch):
+    from src.agents import excel_agent
+
+    client, database, _ = dashboard
+    headers = {"X-Timesheet-Token": "private-token"}
+    repository = Repository(f"sqlite:///{database.as_posix()}")
+    repository.replace_day(date(2026, 11, 2), [
+        Entry(project_code="P1", hours=2, summary="Approved", confidence=1)
+    ], {})
+    original_write = excel_agent.write_timesheet
+    raced = False
+
+    def competing_export(template, output, *args):
+        nonlocal raced
+        if not raced:
+            raced = True
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"other export")
+            raise FileExistsError(output)
+        return original_write(template, output, *args)
+
+    monkeypatch.setattr(excel_agent, "write_timesheet", competing_export)
+    response = client.post("/api/monthly/2026-11/export", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["filename"] == "timesheet-2026-11-2.xlsx"
+    assert (tmp_path / "output" / "timesheet-2026-11.xlsx").read_bytes() == b"other export"
+    assert load_workbook(tmp_path / "output" / response.json()["filename"]).active["C2"].value == 2
 
 
 def test_scheduler_start_stop(dashboard):

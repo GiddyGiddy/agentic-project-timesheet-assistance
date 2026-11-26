@@ -29,8 +29,10 @@ from config.storage import initialize_user_storage
 from config.user_settings import (
     SETTINGS_FILE, UserConfiguration, read_user_configuration, write_user_configuration,
 )
+from src.agents.excel_agent import latest_monthly_output
 from src.database.repository import Repository
 from src.graph.state import Entry, Registry
+from src.integrations.excel_writer import template_for_layout
 from src.main import checked_export, graph_action, load_registry, pending_workflows
 from src.integrations.mcp_client import MCPClient
 from src.integrations.workiq_auth import get_workiq_auth
@@ -208,11 +210,14 @@ def create_app(
                 settings.azure_openai_endpoint, settings.azure_openai_deployment_name,
                 settings.azure_openai_api_key, settings.tenant_id, settings.client_id,
             ))
+            template = template_for_layout(
+                settings.template_path, load_registry(settings.projects_registry_path).excel
+            )
             result["profile_setup"] = {
                 **{field: getattr(settings, field) for field in public_fields},
                 "api_key_configured": bool(settings.azure_openai_api_key),
                 "services_configured": services_configured,
-                "template_available": settings.template_path.is_file(),
+                "template_available": template.is_file(),
                 "settings_saved": (settings.timesheet_data_dir / "config" / SETTINGS_FILE).is_file(),
                 "data_directory": str(settings.timesheet_data_dir),
                 "environment_overrides": [
@@ -275,21 +280,24 @@ def create_app(
                 raise HTTPException(405, "Template upload is available only in per-user profiles")
             if scheduler.running:
                 raise HTTPException(409, "Stop the dashboard scheduler before uploading a template")
-            if settings.template_path.exists():
+            template = template_for_layout(
+                settings.template_path, load_registry(settings.projects_registry_path).excel
+            )
+            if template.exists():
                 raise HTTPException(409, "A template already exists and was not overwritten")
             content = await _limited_body(request, 10 * 1024 * 1024)
             await asyncio.to_thread(_validate_template, content)
             created = False
             try:
-                settings.template_path.parent.mkdir(parents=True, exist_ok=True)
-                with settings.template_path.open("xb") as stream:
+                template.parent.mkdir(parents=True, exist_ok=True)
+                with template.open("xb") as stream:
                     created = True
                     stream.write(content)
             except FileExistsError as exc:
                 raise HTTPException(409, "A template already exists and was not overwritten") from exc
             except OSError as exc:
                 if created:
-                    settings.template_path.unlink(missing_ok=True)
+                    template.unlink(missing_ok=True)
                 LOGGER.error("Template upload failed (%s)", type(exc).__name__)
                 raise HTTPException(500, "Could not save the Excel template; check disk space and permissions.") from exc
             return {"saved": True}
@@ -344,7 +352,7 @@ def create_app(
                 totals[entry.project_code] += entry.hours
                 days.add(entry.entry_date.day)
             pending = await pending_workflows(settings, registry, repository, year, month_number)
-            output = settings.output_dir / f"timesheet-{year:04d}-{month_number:02d}.xlsx"
+            output = latest_monthly_output(settings.output_dir, year, month_number, registry.excel)
             return {
                 "month": month,
                 "projects": [{"project_code": code, "hours": hours}
@@ -356,7 +364,7 @@ def create_app(
                     if day not in days
                 ],
                 "pending_dates": pending,
-                "output_exists": output.is_file(),
+                "output_exists": output is not None,
             }
 
     @app.post("/api/monthly/{month}/export")
@@ -369,7 +377,7 @@ def create_app(
                     settings, load_registry(settings.projects_registry_path), year, month_number
                 )
             except FileExistsError as exc:
-                raise HTTPException(409, "An export already exists; it was not overwritten") from exc
+                raise HTTPException(409, "Could not create a new export; please retry.") from exc
             except (ValueError, FileNotFoundError) as exc:
                 raise HTTPException(400, str(exc)) from exc
             except OSError as exc:
@@ -380,13 +388,16 @@ def create_app(
     @app.get("/api/monthly/{month}/download")
     async def monthly_download(month: str):
         year, month_number = month_parts(month)
-        path = Settings().output_dir / f"timesheet-{year:04d}-{month_number:02d}.xlsx"
-        if not path.is_file():
-            raise HTTPException(404, "No export exists for this month")
-        return FileResponse(
-            path, filename=path.name,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        async with workflow_lock:
+            settings = Settings()
+            registry = load_registry(settings.projects_registry_path)
+            path = latest_monthly_output(settings.output_dir, year, month_number, registry.excel)
+            if path is None:
+                raise HTTPException(404, "No export exists for this month")
+            return FileResponse(
+                path, filename=path.name,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
     @app.get("/api/scheduler")
     async def scheduler_status():

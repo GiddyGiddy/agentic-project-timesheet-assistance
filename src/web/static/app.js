@@ -105,18 +105,27 @@ function renderTemplateStatus(profile) {
   $("#template-file").disabled = profile.template_available;
   $("#upload-template").disabled = profile.template_available;
   $("#template-status").textContent = profile.template_available
-    ? "A template is already available and will not be overwritten. Check its Excel layout below."
-    : "Choose your existing template. Uploading does not validate its project codes or export layout.";
+    ? "A template for the saved layout is already available and will not be overwritten."
+    : "For the saved layout, upload a template or let the first export create one. Uploading does not validate its layout.";
+}
+
+function updateLayoutFields() {
+  const rows = $("#excel-form").elements.layout_mode.value === "rows";
+  $("#rows-layout-fields").hidden = !rows;
+  $("#columns-layout-fields").hidden = rows;
+  $$("input, textarea", $("#rows-layout-fields")).forEach(field => { field.disabled = !rows; });
+  $$("input, textarea", $("#columns-layout-fields")).forEach(field => { field.disabled = rows; });
 }
 
 function renderExcel(layout) {
   const form = $("#excel-form");
-  for (const field of ["sheet_name", "project_column", "first_project_row", "last_project_row",
+  for (const field of ["layout_mode", "date_format", "sheet_name", "project_column", "first_project_row", "last_project_row",
     "header_row", "month_header_cell", "month_header_format", "monthly_total_column"]) {
     form.elements[field].value = layout[field] ?? "";
   }
   form.elements.day_columns.value = layout.day_columns ? JSON.stringify(layout.day_columns, null, 2) : "";
   form.elements.write_total_formula.checked = layout.write_total_formula;
+  updateLayoutFields();
 }
 
 function projectField(title, key, value, placeholder = "") {
@@ -319,9 +328,9 @@ function renderMonth(data) {
   $("#empty-month").textContent = "No approved hours for this month.";
   const pending = data.pending_dates.length ? `Unfinished workflows: ${data.pending_dates.join(", ")}. ` : "";
   const missing = data.days_without_hours.length ? data.days_without_hours.join(", ") : "none";
-  const output = data.output_exists ? " An export already exists and may be out of date." : "";
+  const output = data.output_exists ? " An export already exists and may be out of date. Generate Excel creates a new copy; Download Excel retrieves the latest copy." : "";
   $("#month-message").textContent = `${pending}Days without approved hours: ${missing}.${output}`;
-  $("#export-month-button").disabled = data.pending_dates.length > 0 || !data.projects.length || data.output_exists;
+  $("#export-month-button").disabled = data.pending_dates.length > 0 || !data.projects.length;
   $("#download-month").disabled = !data.output_exists;
 }
 
@@ -393,7 +402,8 @@ $("#download-month").addEventListener("click", handle(async () => {
   }
   const url = URL.createObjectURL(await response.blob());
   const link = node("a");
-  link.href = url; link.download = `timesheet-${month}.xlsx`;
+  const filename = response.headers.get("Content-Disposition")?.match(/filename="?([^";]+)"?/i)?.[1];
+  link.href = url; link.download = filename || `timesheet-${month}.xlsx`;
   document.body.append(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }));
@@ -469,6 +479,7 @@ $("#add-entry").addEventListener("click", () => {
   updateTotals();
 });
 $("#add-project").addEventListener("click", () => addProject());
+$("#excel-form").elements.layout_mode.addEventListener("change", updateLayoutFields);
 $("#save-projects").addEventListener("click", handle(async () => {
   const projects = readProjects();
   await api("/api/registry", {method: "PUT", body: JSON.stringify({...registry, projects})});
@@ -480,16 +491,21 @@ $("#excel-form").addEventListener("submit", async event => {
   event.preventDefault();
   try {
     const form = event.currentTarget;
-    const data = Object.fromEntries(new FormData(form));
+    const data = {...registry.excel, ...Object.fromEntries(new FormData(form))};
     for (const field of ["project_column", "first_project_row", "last_project_row", "header_row"]) {
       data[field] = data[field] ? Number(data[field]) : null;
     }
     for (const field of ["month_header_cell", "monthly_total_column"]) data[field] = data[field] || null;
-    data.day_columns = data.day_columns.trim() ? JSON.parse(data.day_columns) : null;
+    if (typeof data.day_columns === "string") {
+      data.day_columns = data.day_columns.trim() ? JSON.parse(data.day_columns) : null;
+    }
     data.write_total_formula = form.elements.write_total_formula.checked;
     await api("/api/registry", {method: "PUT", body: JSON.stringify({...registry, excel: data})});
     registry = await api("/api/registry");
     renderExcel(registry.excel);
+    const setup = await api("/api/setup");
+    if (setup.profile_setup) renderTemplateStatus(setup.profile_setup);
+    resetMonth();
     notice("Excel layout saved.");
   } catch (error) { notice(error.message, true); }
 });

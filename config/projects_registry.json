@@ -4,15 +4,25 @@
       "code": "EXAMPLE-001",
       "client": "Example Client",
       "project_name": "Example Project",
-      "domains": ["example.com"],
-      "channels": ["example-project"],
-      "keywords": ["example project"]
+      "domains": [
+        "example.com"
+      ],
+      "channels": [
+        "example-project"
+      ],
+      "keywords": [
+        "example project"
+      ]
     }
   ],
   "excel": {
+    "layout_mode": "rows",
+    "date_format": "dd.mm.yyyy",
     "sheet_name": "Timesheet",
     "header_row": 1,
     "project_column": 1,
-    "first_project_row": 2
+    "first_project_row": 2,
+    "month_header_format": "%B %Y",
+    "write_total_formula": false
   }
 }
