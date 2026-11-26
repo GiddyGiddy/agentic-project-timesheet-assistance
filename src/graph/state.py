@@ -3,6 +3,7 @@ from typing import Any, Literal, TypedDict
 import re
 
 from openpyxl.utils import column_index_from_string
+from openpyxl.styles.numbers import is_date_format
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -20,6 +21,8 @@ class Project(BaseModel):
 class ExcelLayout(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    layout_mode: Literal["columns", "rows"] = "columns"
+    date_format: str = Field(default="dd/mm/yyyy", min_length=1, max_length=255)
     sheet_name: str
     header_row: int | None = Field(default=None, ge=1, le=1048576)
     project_column: int = Field(ge=1, le=16384)
@@ -30,6 +33,21 @@ class ExcelLayout(BaseModel):
     month_header_format: str = "%B %Y"
     monthly_total_column: str | None = None
     write_total_formula: bool = False
+
+    @field_validator("date_format")
+    @classmethod
+    def valid_date_format(cls, value: str) -> str:
+        value = value.strip()
+        if not value or not is_date_format(value):
+            raise ValueError("Provide a valid Excel date format, such as dd/mm/yyyy")
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def remove_legacy_date_locale(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "date_locale" in value:
+            return {key: item for key, item in value.items() if key != "date_locale"}
+        return value
 
     @field_validator("day_columns")
     @classmethod
@@ -66,11 +84,19 @@ class ExcelLayout(BaseModel):
 
     @model_validator(mode="after")
     def valid_layout(self) -> "ExcelLayout":
+        if self.layout_mode == "rows" and (
+            not self.sheet_name.strip()
+            or len(self.sheet_name) > 31
+            or self.sheet_name.startswith("'")
+            or self.sheet_name.endswith("'")
+            or re.search(r"[\x00-\x1f\\/*?:\[\]]", self.sheet_name)
+        ):
+            raise ValueError("Invalid row-wise template worksheet name")
         if self.header_row is None and self.day_columns is None:
             raise ValueError("Provide header_row or day_columns")
         if self.last_project_row is not None and self.last_project_row < self.first_project_row:
             raise ValueError("last_project_row must not precede first_project_row")
-        if self.write_total_formula and self.monthly_total_column is None:
+        if self.layout_mode == "columns" and self.write_total_formula and self.monthly_total_column is None:
             raise ValueError("monthly_total_column is required to write total formulas")
         if self.day_columns:
             columns = [column_index_from_string(value) for value in self.day_columns.values()]

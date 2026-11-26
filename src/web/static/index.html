@@ -63,7 +63,7 @@
             <div class="divider"></div>
             <div class="section-title table-title"><div><h3>Approved project totals</h3><p>Unapproved proposals are not included.</p></div></div>
             <div class="table-wrap"><table class="monthly-table"><thead><tr><th>PROJECT CODE</th><th>APPROVED HOURS</th></tr></thead><tbody id="monthly-entries"></tbody></table><div id="empty-month" class="empty-state">No month loaded yet.</div></div>
-            <p class="hint">Days without approved hours can include weekends, future days and empty approvals. Check your timesheet for completeness. Existing exports may be out of date and are never overwritten.</p>
+            <p class="hint">Days without approved hours can include weekends, future days and empty approvals. Check your timesheet for completeness. Regenerating creates a new copy; existing exports are never overwritten.</p>
           </article>
         </section>
 
@@ -85,7 +85,7 @@
 
         <section id="projects" class="page" hidden>
           <div class="heading"><div><p class="eyebrow">YOUR PROJECTS</p><h1>Project registry</h1><p>Give the mapper the context it needs to recognize your work.</p></div></div>
-          <article class="card section-card"><div class="section-title"><div><h2>Active projects</h2><p>Project codes must match your Excel template. Separate multiple values with commas.</p></div><button id="add-project" class="button secondary">+ Add project</button></div>
+          <article class="card section-card"><div class="section-title"><div><h2>Active projects</h2><p>Project codes identify entries and must match a column-wise Excel template. Separate multiple values with commas.</p></div><button id="add-project" class="button secondary">+ Add project</button></div>
             <div id="project-list"></div><div class="form-actions"><button id="save-projects" class="button primary">Save projects</button></div>
           </article>
         </section>
@@ -110,7 +110,7 @@
               <p id="profile-key-status" class="hint"></p>
               <p id="profile-overrides" class="hint"></p>
               <div class="form-actions"><button id="save-profile" class="button primary" type="submit">Save service settings</button></div>
-              <p class="hint">Next: replace the example project in Projects, upload your Excel template below, configure its layout, and sign in to Microsoft 365. Sign in again after changing tenant or client ID.</p>
+              <p class="hint">Next: replace the example project in Projects, configure the Excel layout, and sign in to Microsoft 365. You can optionally upload an existing template below. Sign in again after changing tenant or client ID.</p>
             </form>
             <article class="card section-card"><div class="section-title"><div><h2>Microsoft 365</h2><p>Configure a compatible MCP server and its four operations in <code>config\mcp_servers.json</code>.</p></div><span class="badge">MCP</span></div>
               <div id="mcp-status" class="status-grid"></div>
@@ -119,14 +119,25 @@
               <p class="hint">Configuration status does not verify connectivity. Teams replies are not supported. See the project README for the required tool contract.</p>
             </article>
             <form id="template-form" class="card section-card" hidden>
-              <div class="section-title"><div><h2>Excel template file</h2><p>Upload a macro-free .xlsx file, at most 10 MB. An existing template is never replaced.</p></div></div>
+              <div class="section-title"><div><h2>Excel template file</h2><p>Optionally upload a macro-free .xlsx file, at most 10 MB. Otherwise a basic template is created on first export. An existing template is never replaced.</p></div></div>
               <label>Template file<input id="template-file" type="file" accept=".xlsx" required></label>
               <p id="template-status" class="hint"></p>
               <div class="form-actions"><button id="upload-template" class="button secondary" type="submit">Upload template</button></div>
             </form>
-            <form id="excel-form" class="card section-card"><div class="section-title"><div><h2>Excel layout</h2><p>Coordinates refer to your existing .xlsx template. Blank day mapping uses the header row.</p></div></div>
+            <form id="excel-form" class="card section-card"><div class="section-title"><div><h2>Excel layout</h2><p>Choose a layout and configure its template. Save the layout before uploading a template.</p></div></div>
               <div class="form-grid">
+                <label>Layout<select name="layout_mode"><option value="columns">Days in columns (existing)</option><option value="rows">Days in rows (one worksheet per project)</option></select></label>
                 <label>Sheet name<input name="sheet_name" required></label>
+              </div>
+              <div id="rows-layout-fields" hidden>
+                <div class="form-grid">
+                  <label>Excel date format<input name="date_format" list="excel-date-formats" required></label>
+                  <datalist id="excel-date-formats"><option value="dd.mm.yyyy"><option value="dd/mm/yyyy"><option value="dd.mm.yy"><option value="d mmmm yyyy"></datalist>
+                </div>
+                <p class="hint">Use Excel date format codes, for example dd.mm.yyyy. Each sheet lists the weekday, date and hours in separate columns; the weekday defaults to English and can be changed in Excel.</p>
+              </div>
+              <div id="columns-layout-fields">
+               <div class="form-grid">
                 <label>Project column number<input name="project_column" type="number" min="1" required></label>
                 <label>First project row<input name="first_project_row" type="number" min="1" required></label>
                 <label>Last project row <span class="optional">(optional)</span><input name="last_project_row" type="number" min="1"></label>
@@ -135,8 +146,10 @@
                 <label>Month header format<input name="month_header_format" placeholder="%B %Y"></label>
                 <label>Monthly total column <span class="optional">(optional)</span><input name="monthly_total_column" placeholder="AH"></label>
                 <label class="wide">Explicit day columns as JSON <span class="optional">(optional; e.g. {"1":"C","2":"D"})</span><textarea name="day_columns" rows="3" placeholder='{"1":"C","2":"D"}'></textarea></label>
-                <label class="check wide"><input name="write_total_formula" type="checkbox"> Add total formulas only to blank cells</label>
-              </div><div class="form-actions"><button class="button primary" type="submit">Save Excel layout</button></div>
+               </div>
+              </div>
+              <div class="form-grid"><label class="check wide"><input name="write_total_formula" type="checkbox"> Add total formulas only to blank cells</label></div>
+              <div class="form-actions"><button class="button primary" type="submit">Save Excel layout</button></div>
             </form>
           </div>
         </section>

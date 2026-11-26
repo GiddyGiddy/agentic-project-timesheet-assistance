@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -62,11 +63,13 @@ def import_user_data(source: Path, destination: Path) -> Path:
     databases = [Path("data") / name for name in ("timesheet.db", "checkpoints.db")]
     for relative in databases:
         _source_file(source, relative)
-    optional_files = [Path("data") / "templates" / "timesheet_template.xlsx"]
-    optional_files.extend(
-        path.relative_to(source)
-        for path in (source / "output").glob("timesheet-????-??.xlsx")
-    )
+    optional_files = [
+        Path("data") / "templates" / name
+        for name in ("timesheet_template.xlsx", "timesheet_template_rowwise.xlsx")
+    ]
+    for path in (source / "output").glob("timesheet-*.xlsx"):
+        if re.fullmatch(r"timesheet-[0-9]{4}-[0-9]{2}(?:-rowwise)?(?:-(?:[2-9]|[1-9][0-9]+))?\.xlsx", path.name):
+            optional_files.append(path.relative_to(source))
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".timesheet-import-", dir=destination.parent) as temporary:
         staging = Path(temporary) / "profile"

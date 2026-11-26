@@ -200,6 +200,9 @@ def test_setup_changes_blocked_while_scheduler_running(client, payload, monkeypa
 
 
 def test_template_upload_validates_and_never_overwrites(client, profile, workbook_bytes):
+    registry = client.get("/api/registry").json()
+    registry["excel"]["layout_mode"] = "columns"
+    assert client.put("/api/registry", json=registry).status_code == 200
     path = Settings().template_path
     assert client.post("/api/setup/template", content=b"not-a-workbook").status_code == 422
     assert not path.exists()
@@ -208,6 +211,22 @@ def test_template_upload_validates_and_never_overwrites(client, profile, workboo
     assert client.get("/api/setup").json()["profile_setup"]["template_available"]
     assert client.post("/api/setup/template", content=b"replacement").status_code == 409
     assert path.read_bytes() == workbook_bytes
+
+
+def test_upload_targets_selected_rowwise_template(client, profile, workbook_bytes):
+    legacy = Settings().template_path
+    registry = client.get("/api/registry").json()
+    registry["excel"]["layout_mode"] = "columns"
+    assert client.put("/api/registry", json=registry).status_code == 200
+    assert client.post("/api/setup/template", content=workbook_bytes).status_code == 200
+    registry["excel"]["layout_mode"] = "rows"
+    assert client.put("/api/registry", json=registry).status_code == 200
+    assert not client.get("/api/setup").json()["profile_setup"]["template_available"]
+    assert client.post("/api/setup/template", content=workbook_bytes).status_code == 200
+    rowwise = legacy.with_name(f"{legacy.stem}_rowwise{legacy.suffix}")
+    assert rowwise.read_bytes() == workbook_bytes
+    assert legacy.read_bytes() == workbook_bytes
+    assert client.get("/api/setup").json()["profile_setup"]["template_available"]
 
 
 @pytest.mark.parametrize("kind", ["macro", "macro-type", "expanded"])

@@ -135,7 +135,12 @@ def test_import_cli_snapshots_wal_and_copies_only_allowlisted_data(tmp_path, mon
     (source / ".env").write_text("AZURE_OPENAI_API_KEY=do-not-import", encoding="utf-8")
     settings.mcp_config_path.write_text('{"private": "do-not-import"}', encoding="utf-8")
     settings.template_path.write_bytes(b"explicitly-selected-template")
+    (source / "data" / "templates" / "timesheet_template_rowwise.xlsx").write_bytes(b"rowwise-template")
     (source / "output" / "timesheet-2026-11.xlsx").write_bytes(b"export")
+    (source / "output" / "timesheet-2026-11-rowwise.xlsx").write_bytes(b"rowwise-export")
+    (source / "output" / "timesheet-2026-11-2.xlsx").write_bytes(b"export-copy")
+    (source / "output" / "timesheet-2026-11-rowwise-10.xlsx").write_bytes(b"rowwise-copy")
+    (source / "output" / "timesheet-2026-11-backup.xlsx").write_bytes(b"unrelated-workbook")
     (source / "output" / "unrelated.txt").write_text("do-not-import", encoding="utf-8")
     with closing(sqlite3.connect(source / "data" / "timesheet.db")) as original:
         original.execute("PRAGMA journal_mode=WAL")
@@ -155,7 +160,12 @@ def test_import_cli_snapshots_wal_and_copies_only_allowlisted_data(tmp_path, mon
     assert not (target / ".env").exists()
     assert not (target / "output" / "unrelated.txt").exists()
     assert (target / "output" / "timesheet-2026-11.xlsx").read_bytes() == b"export"
+    assert (target / "output" / "timesheet-2026-11-rowwise.xlsx").read_bytes() == b"rowwise-export"
+    assert (target / "output" / "timesheet-2026-11-2.xlsx").read_bytes() == b"export-copy"
+    assert (target / "output" / "timesheet-2026-11-rowwise-10.xlsx").read_bytes() == b"rowwise-copy"
+    assert not (target / "output" / "timesheet-2026-11-backup.xlsx").exists()
     assert (target / "data" / "templates" / "timesheet_template.xlsx").read_bytes() == b"explicitly-selected-template"
+    assert (target / "data" / "templates" / "timesheet_template_rowwise.xlsx").read_bytes() == b"rowwise-template"
     assert "do-not-import" not in (target / "config" / "mcp_servers.json").read_text(encoding="utf-8")
 
 

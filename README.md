@@ -1,6 +1,7 @@
+[![M8ven Score](https://m8ven.ai/badge/mcp/giddygiddy/agentic-project-timesheet-assistance)](https://m8ven.ai/mcp/giddygiddy/agentic-project-timesheet-assistance?s=readme)
 # Agentic Project Timesheet Assistant
 
-The Agentic Project Timesheet Assistant is a local, single-user application that turns a day's Microsoft 365 activity into a proposed project timesheet. It collects Outlook email, calendar and Teams chat metadata through the Work IQ MCP server, asks an Azure OpenAI model to propose project hours, waits for explicit human approval, and exports approved hours to a copy of your Excel template. Nothing is saved as a timesheet before a person approves it.
+The Agentic Project Timesheet Assistant is a local, single-user application that turns a day's Microsoft 365 activity into a proposed project timesheet. It collects Outlook email, calendar and Teams chat metadata through the Work IQ MCP server, asks an Azure OpenAI model to propose project hours, waits for explicit human approval, and exports approved hours to a copy of an existing or generated Excel template. Nothing is saved as a timesheet before a person approves it.
 
 It is built with Python, LangGraph, FastAPI, SQLAlchemy/SQLite, MSAL, `langchain-mcp-adapters` and `openpyxl`.
 
@@ -48,7 +49,7 @@ It is built with Python, LangGraph, FastAPI, SQLAlchemy/SQLite, MSAL, `langchain
 | MCP client | `src\integrations\mcp_client.py` | Reads `config\mcp_servers.json`, connects through `langchain-mcp-adapters`, caches tools, and routes the Work IQ adapter. |
 | Work IQ collector | `src\integrations\workiq_collector.py` | Reads email, calendar and chat data with time windows, size limits and completeness checks. |
 | Work IQ sign-in | `src\integrations\workiq_auth.py` | MSAL delegated browser sign-in; token in memory. |
-| Excel writer | `src\integrations\excel_writer.py` | Copies the template, fills project rows by day column, preserves formulas, never overwrites. |
+| Excel writer | `src\integrations\excel_writer.py` | Creates a basic missing template, then fills a copy by project and day, preserving formulas and never overwriting existing files. |
 | Persistence | `src\database\` | SQLAlchemy models (`DailyEntry`, `ActivityAudit`) and repository. |
 
 ## Application capabilities
@@ -56,7 +57,7 @@ It is built with Python, LangGraph, FastAPI, SQLAlchemy/SQLite, MSAL, `langchain
 - **Daily proposal:** collects activity for one local day and proposes hours per registered project, with a summary and a confidence score for each entry.
 - **Human approval:** every proposal pauses at a LangGraph interrupt. A person edits, approves or rejects it in the dashboard or CLI. The pause survives restarts through SQLite checkpoints.
 - **Project registry:** `config\projects_registry.json` is the ground truth for project codes, clients, email domains, Teams channel names and keywords, and holds the Excel layout.
-- **Monthly export:** approved entries are written to a new workbook copied from the template. Existing formulas are preserved and existing workbooks are never overwritten. Unfinished daily workflows block the export.
+- **Monthly export:** approved entries are written to a new workbook copied from the template. If the template is missing, a basic one is generated from the configured layout and project codes. Existing formulas are preserved and existing workbooks are never overwritten. Unfinished daily workflows block the export.
 - **Scheduler:** optional in-process schedule for the daily proposal and the month-end export.
 
 ## Agentic AI
@@ -125,7 +126,7 @@ The Windows packaging work separates writable user data from application files a
 
 - Repository runs keep their existing paths and `.env` behaviour unless opted into per-user storage.
 - Portable frozen builds select `%LOCALAPPDATA%\TimesheetAssistant`. MSIX uses `%LOCALAPPDATA%\Packages\<package-family>\LocalState\TimesheetAssistant`, derived from the calling process's Windows package identity, so Preview does not automatically reuse portable or future production data. Set `TIMESHEET_DATA_DIR` to an absolute path to explicitly select another profile or test this mode from source.
-- A profile contains `config\`, `data\` (SQLite databases, checkpoints and optional Excel template), and `output\`. First startup seeds the bundled project/MCP configuration only if missing. It never replaces existing configuration or creates a dummy Excel template.
+- A profile contains `config\`, `data\` (SQLite databases, checkpoints and optional Excel template), and `output\`. First startup seeds the bundled project/MCP configuration only if missing. It never replaces existing configuration; a missing basic Excel template is generated only when exporting.
 - Per-user mode ignores the working-directory `.env`, including MCP substitutions. Enter service settings in the dashboard or supply process environment variables. No credentials or Microsoft 365 tokens are copied into a new profile.
 - Explicit path overrides remain supported; relative overrides in per-user mode are rooted in the profile. Application resources continue to come from the installed package, not the working directory.
 - Existing development data is never moved or imported automatically. User data is still unencrypted; back up the profile and exported workbooks. Do not rely on MSIX uninstall to preserve application data.
@@ -144,7 +145,7 @@ Open the private dashboard URL printed at startup. An unconfigured profile opens
 1. Enter the Azure OpenAI HTTPS resource root, deployment, API version and key, your Entra tenant/client IDs, and an IANA time zone.
 2. Select **Save service settings**. Values are saved atomically in `config\service-settings.dpapi` under the profile, encrypted with Windows user-scoped DPAPI, not plaintext JSON or `.env`. Saving makes no service calls and does not prove connectivity.
 3. Replace the example project under **Projects** with your project codes.
-4. Upload your existing macro-free `.xlsx` template and configure **Excel layout** to match. Upload accepts at most 10 MiB, 50 MiB expanded ZIP contents and 1,000 ZIP entries. It saves only to the configured template path and refuses to replace an existing/imported template. Upload validation does not establish that the project's export layout is correct.
+4. Configure **Excel layout**. Optionally upload an existing macro-free `.xlsx` template before exporting; otherwise a basic template is generated. Upload accepts at most 10 MiB, 50 MiB expanded ZIP contents and 1,000 ZIP entries. It saves only to the configured template path and refuses to replace an existing/imported template. Upload validation does not establish that the project's export layout is correct.
 5. Sign in to Microsoft 365, then generate and review a proposal. Approval and export remain separate explicit actions.
 
 Leave the API key blank to retain the saved key; use **Remove the saved API key** to remove it. Only a configured/not-configured flag returns to the browser. Stop the dashboard scheduler before changing settings or uploading a template. Sign in again after changing tenant/client IDs; sign-in tokens still disappear on process restart.
@@ -166,7 +167,7 @@ Close the source application and its scheduler first, and back up its data. Run 
 
 The source must use the standard layout containing `data\timesheet.db`, `data\checkpoints.db`, and `config\projects_registry.json`. Custom source path overrides are not inferred from `.env`. The import validates the registry and snapshots both SQLite databases with SQLite's backup API, including committed WAL data. It preserves approved entries, activity audit and pending reviews. The destination is published only after the complete import succeeds.
 
-Only the project registry, these databases, an optional `data\templates\timesheet_template.xlsx`, and `output\timesheet-????-??.xlsx` exports are imported. MCP configuration is reset to bundled defaults; source `.env`, credentials, sign-in caches and unrelated files are excluded. Sign in again and reconfigure service connections separately. Without `--destination`, import uses the process `TIMESHEET_DATA_DIR` or the default Windows per-user location.
+Only the project registry, these databases, the optional default templates `data\templates\timesheet_template.xlsx` and `data\templates\timesheet_template_rowwise.xlsx`, and monthly exports (including numbered copies for both layouts) are imported. MCP configuration is reset to bundled defaults; source `.env`, credentials, sign-in caches and unrelated files are excluded. Sign in again and reconfigure service connections separately. Without `--destination`, import uses the process `TIMESHEET_DATA_DIR` or the default Windows per-user location.
 
 For a different destination, set `TIMESHEET_DATA_DIR` to that same path when launching. To return to repository-development storage, remove the override from that shell:
 
@@ -214,7 +215,7 @@ The script runs PyInstaller, verifies required runtime/configuration/frontend/ti
 
 The version comes from `pyproject.toml`. Build tools are pinned, but runtime dependencies use compatible ranges: this is **not** a byte-for-byte reproducible or fully locked release build. Generated build/distribution files are ignored by Git. A failed build must not be distributed; older archives from previous runs may remain.
 
-Extract the **whole ZIP** to a writable location and run `TimesheetAssistant.exe`. Do not copy the executable alone or run it inside the ZIP: it needs the adjacent `_internal` directory. Python does not need to be installed for this bundle. The app opens the browser and uses the per-user profile described above; service configuration, Microsoft 365 entitlement/sign-in and an export template are still required. Stop a development dashboard before launching the bundle because both use port 8765.
+Extract the **whole ZIP** to a writable location and run `TimesheetAssistant.exe`. Do not copy the executable alone or run it inside the ZIP: it needs the adjacent `_internal` directory. Python does not need to be installed for this bundle. The app opens the browser and uses the per-user profile described above; service configuration and Microsoft 365 entitlement/sign-in are still required. Stop a development dashboard before launching the bundle because both use port 8765.
 
 This is a portable, **unsigned** test distribution, not an installer or production release. Windows may show trust/SmartScreen warnings or block it under organizational policy; follow your administrator's distribution policy rather than bypassing protection. Clean-machine testing, dependency/license review, trusted production signing and upgrades remain to be completed.
 
@@ -343,11 +344,15 @@ Tool discovery confirms connectivity, not permission to read every resource. Wor
 
 ### Projects
 
-Edit `config\projects_registry.json` (or use the dashboard) and replace the example project with real project codes, clients, email domains, Teams channel names and keywords. Codes must be unique and match the project codes in the Excel template. `project_name` is optional extra context for the mapper and the review message.
+Edit `config\projects_registry.json` (or use the dashboard) and replace the example project with real project codes, clients, email domains, Teams channel names and keywords. Codes must be unique and match the project codes in a column-wise Excel template. `project_name` is optional extra context for the mapper and review message; the row-wise export also displays it.
 
 ### Excel template
 
-Place your corporate `.xlsx` at `data\templates\timesheet_template.xlsx` or set `TEMPLATE_PATH`. Do not create a dummy corporate template. Configure `excel` in the registry:
+Choose the layout under **Setup & integrations > Excel layout** and save it before uploading a template. Existing configurations default to days in columns. Both layouts generate a basic template on the first export with approved entries if their template is missing; a generated workbook is not a corporate template. Regenerating a month creates a numbered copy (for example `timesheet-2026-11-rowwise-2.xlsx`); **Download Excel** retrieves the latest copy for the selected layout. Earlier copies remain in the output folder. Existing templates and exports are never overwritten.
+
+#### Days in columns
+
+Place an existing corporate `.xlsx` at `data\templates\timesheet_template.xlsx` or set `TEMPLATE_PATH`, then configure `excel` to match it:
 
 - `sheet_name`: exact worksheet name.
 - `header_row`: one-based row that contains each day number, unless explicit `day_columns` are given.
@@ -372,6 +377,14 @@ By default each day of the exported month needs a unique header with its day num
 ```
 
 Every day of the month must map to a distinct column, and the header, project, day and total locations must not overlap. If `write_total_formula` is true, a SUM formula is added to **blank** cells in the total column only; existing formulas are preserved and other values are never replaced. Each project with approved entries must appear exactly once, and its day cells must be ordinary writable cells (no formulas or merged cells). Registered project rows are cleared across the recognised day columns and then filled with approved hours; other rows are untouched.
+
+For a generated template, registered project codes are placed in sorted order starting at `first_project_row`. With a header row and no explicit mapping, days 1–31 use the first available columns, skipping the project, total and month-header cells. With explicit mapping, day headers are written on `header_row`, or immediately above the first project row when possible; if projects begin on row 1 and no header row is configured, there are no column headings. A configured `last_project_row` must fit every project. Explicit mappings must include every day of the exported month. The template is created once and is not updated when projects or layout change; update it manually or select a new template path.
+
+#### Days in rows
+
+Select **Days in rows** and enter an Excel date format, such as `dd.mm.yyyy` or `dd/mm/yyyy`. Each registered project gets a worksheet with its optional project name and project code in rows 1 and 2, the month heading in row 3, and weekday, date, and approved hours in columns A, B and C beginning at row 5. All calendar days appear; hours are blank when none were approved. The weekday defaults to English; change its locale using Excel's Format Cells dialog. Weekday and date cells contain separate Excel dates, so edit both if changing a date. When enabled, the total formula is placed in C37. Changes apply to new exports, not previously generated files.
+
+The row-wise template is separate: by default `data\templates\timesheet_template_rowwise.xlsx`, or the configured `TEMPLATE_PATH` with `_rowwise` appended to its stem. An uploaded row-wise template must have the configured sheet name, labels `Project` in A1, `Project number` in A2, `Weekday` in A4, `Date` in B4 and `Hours` in C4, and writable cells B1, B2, A3 and A5:C35. Formula and merged input cells are rejected; an existing total formula in C37 is preserved. An older two-column template is adapted in the output only if C4, C5:C35, B37 and C37 are empty; otherwise update the template manually, including moving or updating its total formula. The original template is never changed. The output is `timesheet-YYYY-MM-rowwise.xlsx`, separate from the column-wise export. Uploads and downloads use the saved layout. A missing project name leaves its header value blank.
 
 The output is a new `.xlsx` and is never written over an existing file or the template. `openpyxl` does not calculate formulas, so open the result in Excel to recalculate. It may not preserve every advanced Excel feature; validate against a copy of your template first. Macro-enabled templates are not supported.
 
