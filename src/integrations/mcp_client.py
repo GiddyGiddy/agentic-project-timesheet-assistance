@@ -1,17 +1,21 @@
 import json
 import os
 import re
+import ssl
+import sys
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+import httpx
 from dotenv import dotenv_values
 from langchain_core.messages import ToolMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest, MCPToolCallResult
 from mcp.types import CallToolResult
+from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
 
 from config.settings import Settings
 from src.integrations.workiq_auth import WORKIQ_URL, get_workiq_auth
@@ -21,6 +25,21 @@ TOOL_CACHE_SECONDS = 1200
 
 
 _ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _workiq_http_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        headers=headers,
+        timeout=timeout if timeout is not None else httpx.Timeout(
+            MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT,
+        ),
+        auth=auth,
+        verify=ssl.create_default_context(),
+    )
 
 
 async def _check_workiq_error(
@@ -110,6 +129,8 @@ class MCPClient:
         token = await asyncio.to_thread(lambda: get_workiq_auth().token())
         connection = dict(self.servers[server])
         connection["headers"] = {**connection.get("headers", {}), "Authorization": f"Bearer {token}"}
+        if sys.platform == "win32":
+            connection["httpx_client_factory"] = _workiq_http_client
         client = MultiServerMCPClient(
             {server: connection}, handle_tool_errors=False,
             tool_interceptors=[_check_workiq_error],
