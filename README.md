@@ -340,6 +340,8 @@ Then set `TENANT_ID` and `CLIENT_ID` in `.env` and check the connection. This si
 
 The dashboard has the same check under **Setup & integrations > Sign in to Microsoft 365**. Tokens live only in the current process. The dashboard scheduler uses the dashboard's session; for a CLI run, retry or scheduler pass `--workiq-sign-in` to sign in within that process. A scheduler cannot sign in unattended after a restart.
 
+On Windows, Work IQ's MCP HTTPS connection uses the system certificate trust store, including certificates installed by your organization's administrators. Certificate-chain and hostname verification remain enabled; other MCP connections and non-Windows defaults are unchanged. If a required certificate is missing or expired, ask your administrator to correct the trust configuration rather than disabling TLS verification.
+
 Tool discovery confirms connectivity, not permission to read every resource. Work IQ read failures include structured HTTP status/error codes when available, without logging source content. Teams collection includes messages at the day's start and excludes the next day's start. Failed collection remains resumable with `retry` and never generates a partial proposal.
 
 ### Projects
